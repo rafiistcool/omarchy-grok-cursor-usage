@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh Grok Build subscription usage for the Omarchy agents panel
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/omarchy/agents/omarchy-grok-usage-watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

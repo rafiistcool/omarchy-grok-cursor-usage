@@ -1,0 +1,293 @@
+#!/usr/bin/python3
+"""Collect Cursor Ultra / plan usage into one display-ready JSON record.
+
+Uses the local Cursor app session in ~/.config/Cursor/User/globalStorage
+and the same dashboard RPCs Cursor's app uses
+(GetCurrentPeriodUsage / GetPlanInfo). The agents panel only reads the
+JSON this prints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "cursor"
+AGENT_NAME = "Cursor"
+AUTH_HELP = "Sign in to the Cursor app to restore Ultra usage."
+PLAN_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo"
+USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
+PROBE_MIN_INTERVAL_SECONDS = 15
+
+
+def cursor_state_db() -> Path:
+  config = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+  return config / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def usage_dir() -> Path:
+  state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+  path = state / "omarchy" / "agents" / "usage"
+  path.mkdir(parents=True, exist_ok=True)
+  return path
+
+
+def empty_stats() -> dict[str, Any]:
+  return {
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [],
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+    "modelUsage": {},
+  }
+
+
+def base_record(**overrides: Any) -> dict[str, Any]:
+  record: dict[str, Any] = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": False,
+    "hasLocalStats": False,
+    "hasPromptStats": False,
+    "scope": "account",
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": "",
+    "limits": [],
+  }
+  record.update(empty_stats())
+  record.update(overrides)
+  return record
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(tmp_name)
+  try:
+    with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.exists():
+    return None
+  try:
+    age = time.time() - path.stat().st_mtime
+    if 0 <= age <= max_age_seconds:
+      data = json.loads(path.read_text(encoding="utf-8"))
+      return data if isinstance(data, dict) else None
+  except Exception:
+    return None
+  return None
+
+
+def read_item(db: Path, key: str) -> str:
+  if not db.is_file():
+    return ""
+  try:
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  except sqlite3.Error:
+    return ""
+  try:
+    row = conn.execute("SELECT value FROM ItemTable WHERE key = ?", (key,)).fetchone()
+  except sqlite3.Error:
+    return ""
+  finally:
+    conn.close()
+  return str(row[0] or "") if row else ""
+
+
+def cents(value: Any) -> float | None:
+  try:
+    n = float(value)
+  except (TypeError, ValueError):
+    return None
+  if n != n:
+    return None
+  return max(0.0, n / 100.0)
+
+
+def ms_to_iso(value: Any) -> str:
+  raw = str(value or "").strip()
+  if not raw:
+    return ""
+  try:
+    ms = int(raw)
+    if ms < 1e12:
+      ms *= 1000
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat()
+  except (TypeError, ValueError, OSError):
+    return raw
+
+
+def dashboard_post(url: str, token: str) -> dict[str, Any]:
+  request = urllib.request.Request(
+    url,
+    data=b"{}",
+    method="POST",
+    headers={
+      "Authorization": "Bearer " + token,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "Mozilla/5.0",
+    },
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=15) as response:
+      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  except urllib.error.HTTPError as error:
+    if error.code in (401, 403):
+      return {"ok": False, "auth": True, "helpText": "Cursor rejected the saved sign-in. Open the Cursor app and sign in."}
+    return {"ok": False, "helpText": f"Cursor usage returned status {error.code}."}
+  except Exception:
+    return {"ok": False, "transport": True, "helpText": "Couldn't reach Cursor's usage endpoint. Retrying shortly."}
+  return {"ok": True, "payload": payload if isinstance(payload, dict) else {}}
+
+
+def used_ratio(value: Any) -> float | None:
+  try:
+    n = float(value)
+  except (TypeError, ValueError):
+    return None
+  if n != n:
+    return None
+  # Cursor reports 8.9865 for 9%. Values already in 0–1 stay as-is.
+  if n > 1:
+    n = n / 100.0
+  return min(1.0, max(0.0, n))
+
+
+def parse_usage(plan: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+  info = plan.get("planInfo") if isinstance(plan.get("planInfo"), dict) else {}
+  bucket = usage.get("planUsage") if isinstance(usage.get("planUsage"), dict) else {}
+  start = ms_to_iso(usage.get("billingCycleStart"))
+  end = ms_to_iso(usage.get("billingCycleEnd") or info.get("billingCycleEnd"))
+  tier = str(info.get("planName") or "").strip() or "Ultra"
+
+  # Cursor Ultra UI: "Cursor models" = autoPercentUsed, "Other models" =
+  # apiPercentUsed. Monthly included pool. Do not use remaining-cents / $400.
+  limits: list[dict[str, Any]] = []
+  cursor_models = used_ratio(bucket.get("autoPercentUsed"))
+  other_models = used_ratio(bucket.get("apiPercentUsed"))
+  if cursor_models is not None:
+    limits.append({
+      "label": "Cursor models",
+      "title": "Cursor models",
+      "percent": cursor_models,
+      "resetsAt": end,
+      "startsAt": start,
+    })
+  if other_models is not None:
+    limits.append({
+      "label": "Other models",
+      "title": "Other models",
+      "percent": other_models,
+      "resetsAt": end,
+      "startsAt": start,
+    })
+  if not limits:
+    return {}
+  return {"ready": True, "tierLabel": tier, "limits": limits}
+
+
+def collect(force: bool) -> dict[str, Any]:
+  db = cursor_state_db()
+  token = read_item(db, "cursorAuth/accessToken")
+  membership = read_item(db, "cursorAuth/stripeMembershipType")
+  probe_cache = cache_root() / "cursor-limits.json"
+  cached = read_fresh_json(probe_cache, float("inf")) or {}
+  fallback = cached.get("record") if isinstance(cached.get("record"), dict) else None
+
+  if not token:
+    record = base_record(
+      usageStatusText="Waiting for auth",
+      authHelpText=AUTH_HELP,
+      tierLabel=membership.title() if membership else "",
+    )
+    if fallback:
+      record.update({k: fallback[k] for k in ("limits", "balance", "tierLabel") if k in fallback})
+      record["ready"] = True
+    return record
+
+  fetched_at = float(cached.get("fetchedAtMs") or 0) / 1000
+  if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+    record = base_record(ready=True)
+    record.update(fallback)
+    return record
+
+  plan = dashboard_post(PLAN_URL, token)
+  usage = dashboard_post(USAGE_URL, token)
+  if not plan["ok"] or not usage["ok"]:
+    failed = plan if not plan["ok"] else usage
+    record = base_record()
+    if fallback:
+      record.update({k: fallback[k] for k in ("limits", "balance", "tierLabel") if k in fallback})
+      record["ready"] = True
+    if failed.get("transport"):
+      record["retryAdvised"] = True
+    if failed.get("auth") or not fallback:
+      record["usageStatusText"] = "Cursor usage unavailable"
+      record["authHelpText"] = str(failed.get("helpText") or AUTH_HELP)
+    return record
+
+  parsed = parse_usage(plan.get("payload") or {}, usage.get("payload") or {})
+  if not parsed:
+    return base_record(usageStatusText="Cursor usage unavailable", authHelpText="Cursor returned no included usage.")
+
+  snapshot = {"fetchedAtMs": round(time.time() * 1000), "record": parsed}
+  try:
+    write_json(probe_cache, snapshot)
+  except Exception as exc:
+    print(f"omarchy-agent-usage-cursor: could not write cache ({exc})", file=sys.stderr)
+  record = base_record()
+  record.update(parsed)
+  return record
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Print the Cursor usage record as JSON")
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.add_argument("--write", action="store_true")
+  args = parser.parse_args()
+
+  record = collect(force=args.force)
+  if not record.get("balance"):
+    record.pop("balance", None)
+  text = json.dumps(record, separators=(",", ":"), sort_keys=True)
+  if args.write:
+    write_json(usage_dir() / "cursor.json", record)
+  print(text)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

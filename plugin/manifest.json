@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "id": "solary.agents",
+  "name": "My Agents",
+  "version": "1.0.0",
+  "author": "Omarchy",
+  "license": "MIT",
+  "description": "Claude Code, Codex, and Fireworks usage, limits, and pace in a native Omarchy bar panel.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "My Agents",
+    "description": "One bar icon and one panel: rate-limit meters with pace, today, the last week, and the all-time model breakdown for every subscription.",
+    "category": "AI",
+    "aliases": [
+      "agents",
+      "model-usage"
+    ],
+    "allowMultiple": false,
+    "defaults": {
+      "providers": {
+        "claude": {
+          "enabled": true
+        },
+        "codex": {
+          "enabled": true
+        },
+        "fireworks": {
+          "enabled": true
+        }
+      },
+      "refreshIntervalSec": 900,
+      "syncMode": "Off",
+      "syncDir": "",
+      "syncFileName": "",
+      "syncDeviceId": "",
+      "remainingStyle": "logo-on-bar",
+      "remainingShowPercent": "Off",
+      "remainingLogoSize": 13,
+      "remainingBarWidth": 13,
+      "remainingBarHeight": 3,
+      "remainingFontSize": 10
+    },
+    "schema": [
+      {
+        "key": "remainingStyle",
+        "type": "enum",
+        "label": "Remaining style",
+        "options": [
+          "logo-bar",
+          "logo-on-bar",
+          "bar-percent",
+          "percent"
+        ],
+        "defaultValue": "logo-on-bar",
+        "description": "logo-on-bar is the SuperGrok mark with a horizontal remaining meter under it. logo-bar puts a vertical meter beside the mark. bar-percent is a wide meter plus a number. percent is the number alone."
+      },
+      {
+        "key": "remainingShowPercent",
+        "type": "enum",
+        "label": "Show remaining percent",
+        "options": [
+          "Off",
+          "On"
+        ],
+        "defaultValue": "Off",
+        "description": "Show the leftover percentage next to the mark or meter."
+      },
+      {
+        "key": "remainingLogoSize",
+        "type": "integer",
+        "label": "Logo size",
+        "min": 8,
+        "max": 22,
+        "step": 1,
+        "defaultValue": 13
+      },
+      {
+        "key": "remainingBarWidth",
+        "type": "integer",
+        "label": "Remaining bar width",
+        "min": 2,
+        "max": 80,
+        "step": 1,
+        "defaultValue": 13
+      },
+      {
+        "key": "remainingBarHeight",
+        "type": "integer",
+        "label": "Remaining bar height",
+        "min": 2,
+        "max": 48,
+        "step": 1,
+        "defaultValue": 3
+      },
+      {
+        "key": "remainingFontSize",
+        "type": "integer",
+        "label": "Percent font size",
+        "min": 7,
+        "max": 16,
+        "step": 1,
+        "defaultValue": 10
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 900
+      },
+      {
+        "key": "syncMode",
+        "type": "enum",
+        "label": "Synced aggregation",
+        "options": [
+          "Off",
+          "On"
+        ],
+        "defaultValue": "Off",
+        "description": "When On, write this machine's local usage snapshot and merge snapshots from other machines."
+      },
+      {
+        "key": "syncDir",
+        "type": "path",
+        "label": "Sync folder",
+        "defaultValue": "",
+        "description": "A folder synced by Syncthing, Dropbox, rsync, etc."
+      },
+      {
+        "key": "syncFileName",
+        "type": "string",
+        "label": "Snapshot file name",
+        "defaultValue": "",
+        "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."
+      },
+      {
+        "key": "syncDeviceId",
+        "type": "string",
+        "label": "Device id",
+        "defaultValue": "",
+        "description": "Optional stable device name used inside synced aggregate snapshots."
+      }
+    ]
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.agents"
+  }
+}
