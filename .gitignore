@@ -1,5 +1,11 @@
-.auth
-*.bak
-*~
 __pycache__/
+*.py[cod]
+.Python
 .DS_Store
+*~
+*.bak
+.auth
+credentials.json
+usage.json
+history/
+logs/

@@ -13,7 +13,9 @@ Item {
   property var settings: ({})
 
   readonly property string home: Quickshell.env("HOME") || ""
-  readonly property string usageDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/agents/usage"
+  readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || home + "/.local/state") + "/omarchy/agents"
+  readonly property string usageDir: stateDir + "/usage"
+  readonly property string historyDir: stateDir + "/history"
 
   // ------------------------------------------------------------- discovery
 
@@ -78,6 +80,7 @@ Item {
     dataRevision++
     scheduleLimitsRetry()
     scheduleSync()
+    scheduleHistory()
   }
 
   // A collector that could not reach its limits endpoint at all — typically
@@ -110,6 +113,7 @@ Item {
   Component.onCompleted: {
     rescanAgents()
     if (syncConfigured()) scheduleSync()
+    scheduleHistory()
   }
 
   // -------------------------------------------------------------- refresh
@@ -144,7 +148,7 @@ Item {
   }
 
   function updateCommand(kind, agentIds) {
-    var command = ["omarchy-agent-usage-update"]
+    var command = [root.home + "/.config/omarchy/agents/run-usage-update"]
     if (kind === "force") command.push("--force")
     if (kind === "limits") command.push("--limits-only")
     var providers = settings && settings.providers ? settings.providers : {}
@@ -254,6 +258,7 @@ Item {
       // Rate limits and balances stay per-account and are never merged
       // across devices.
       limits: Array.isArray(record.limits) ? record.limits : [],
+      remainingSeries: remainingSeriesFor(String(record.id)),
       tierLabel: String(record.tierLabel || ""),
       balance: balanceValue(record.balance),
 
@@ -275,9 +280,106 @@ Item {
     }
   }
 
+  function remainingSeriesFor(providerId) {
+    var rev = dataRevision
+    var hist = remainingHistory[providerId]
+    if (!hist || !Array.isArray(hist.series)) return []
+    return hist.series
+  }
+
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
     return value === undefined || value === null ? fallback : value
+  }
+
+  // ------------------------------------------------ remaining history
+
+  property var remainingHistory: ({ grok: null, cursor: null, codex: null })
+  property bool historyPending: false
+
+  Timer {
+    id: historyDebounce
+    interval: 400
+    repeat: false
+    onTriggered: root.runHistory()
+  }
+
+  Process {
+    id: historyProcess
+    running: false
+    onExited: {
+      if (root.historyPending) {
+        root.historyPending = false
+        root.runHistory()
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") console.warn("agents/history", text.trim())
+    }
+  }
+
+  FileView {
+    path: root.historyDir + "/grok.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("grok", text())
+    onLoadFailed: root.applyHistory("grok", "")
+  }
+
+  FileView {
+    path: root.historyDir + "/cursor.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("cursor", text())
+    onLoadFailed: root.applyHistory("cursor", "")
+  }
+
+  FileView {
+    path: root.historyDir + "/codex.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("codex", text())
+    onLoadFailed: root.applyHistory("codex", "")
+  }
+
+  function historyScriptPath() {
+    var url = Qt.resolvedUrl("history.py").toString()
+    if (url.indexOf("file://") === 0) return decodeURIComponent(url.substring(7))
+    return url
+  }
+
+  function scheduleHistory() {
+    historyDebounce.restart()
+  }
+
+  function runHistory() {
+    if (historyProcess.running) {
+      historyPending = true
+      return
+    }
+    historyProcess.command = ["python3", historyScriptPath()]
+    historyProcess.running = true
+  }
+
+  function applyHistory(id, content) {
+    var parsed = null
+    try {
+      var obj = JSON.parse(String(content || ""))
+      if (obj && typeof obj === "object") parsed = obj
+    } catch (e) {
+      parsed = null
+    }
+    var next = { grok: remainingHistory.grok, cursor: remainingHistory.cursor, codex: remainingHistory.codex }
+    try {
+      if (JSON.stringify(next[id]) === JSON.stringify(parsed)) return
+    } catch (e2) {}
+    next[id] = parsed
+    remainingHistory = next
+    dataRevision++
   }
 
   // ------------------------------------------------------------------ sync

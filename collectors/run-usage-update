@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# User-local wrapper around omarchy-agent-usage-update.
+# Runs collectors from ~/.config/omarchy/agents first so they override the
+# packaged ones (Codex 0.149 broke `-a untrusted` in the stock collector).
+set -euo pipefail
+
+USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+USER_DIR="$HOME/.config/omarchy/agents"
+PACKAGED="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-agent-usage-update"
+
+mkdir -p "$USAGE_DIR"
+
+except=()
+status=0
+user_flags=()
+for arg in "$@"; do
+  case "$arg" in
+    --force|--limits-only) user_flags+=("$arg") ;;
+  esac
+done
+
+collect_stdout() {
+  local collector="$1" agent="$2"
+  shift 2
+  local record tmp
+  if ! record=$(python3 "$collector" "$@") || [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+    echo "run-usage-update: $agent collector failed" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$USAGE_DIR/.$agent.XXXXXX")
+  printf '%s\n' "$record" >"$tmp"
+  mv "$tmp" "$USAGE_DIR/$agent.json"
+}
+
+shopt -s nullglob
+for collector in "$USER_DIR"/omarchy-agent-usage-*; do
+  [[ -x $collector || -f $collector ]] || continue
+  agent="${collector##*/omarchy-agent-usage-}"
+  [[ $agent == "update" ]] && continue
+  except+=(--except "$agent")
+  collect_stdout "$collector" "$agent" "${user_flags[@]}" || status=1
+done
+
+if [[ -x $PACKAGED ]]; then
+  "$PACKAGED" "${except[@]}" "$@" || status=1
+fi
+
+exit "$status"

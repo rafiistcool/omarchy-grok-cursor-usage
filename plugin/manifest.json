@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "solary.agents",
-  "name": "My Agents",
+  "id": "yourname.agents",
+  "name": "Agents",
   "version": "1.0.0",
-  "author": "Omarchy",
+  "author": "omarchy-grok-cursor-usage contributors",
   "license": "MIT",
-  "description": "Claude Code, Codex, and Fireworks usage, limits, and pace in a native Omarchy bar panel.",
+  "description": "Grok, Cursor, and Codex leftover quotas on the Omarchy bar, with remaining-over-time charts and even-burn pace.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,8 +14,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "My Agents",
-    "description": "One bar icon and one panel: rate-limit meters with pace, today, the last week, and the all-time model breakdown for every subscription.",
+    "displayName": "Agents",
+    "description": "Stacked leftover meters and remaining-over-time charts for every AI coding subscription on the machine.",
     "category": "AI",
     "aliases": [
       "agents",
@@ -24,10 +24,16 @@
     "allowMultiple": false,
     "defaults": {
       "providers": {
-        "claude": {
+        "grok": {
+          "enabled": true
+        },
+        "cursor": {
           "enabled": true
         },
         "codex": {
+          "enabled": true
+        },
+        "claude": {
           "enabled": true
         },
         "fireworks": {
@@ -44,7 +50,8 @@
       "remainingLogoSize": 13,
       "remainingBarWidth": 13,
       "remainingBarHeight": 3,
-      "remainingFontSize": 10
+      "remainingFontSize": 10,
+      "remainingAxis": "days"
     },
     "schema": [
       {
@@ -106,6 +113,17 @@
         "max": 16,
         "step": 1,
         "defaultValue": 10
+      },
+      {
+        "key": "remainingAxis",
+        "type": "enum",
+        "label": "Remaining chart range",
+        "options": [
+          "days",
+          "cycle"
+        ],
+        "defaultValue": "days",
+        "description": "days is a 2-day span (1.8 days before now, 0.2 after, snapped to :00/:15/:30/:45). If the quota start is inside the lookback, the left edge is the quarter-hour at or before the first sample and width stays 2 days. If reset is within 2 days, the right edge is the reset and width stays 2 days. Both specials together may shorten the span. cycle is first sample through the reset."
       },
       {
         "key": "refreshIntervalSec",

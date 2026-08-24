@@ -8,8 +8,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "omarchy.agents"
-  ipcTarget: "omarchy.agents"
+  moduleName: "yourname.agents"
+  ipcTarget: "yourname.agents"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -99,6 +99,19 @@ Panel {
   readonly property int remainingBarHeight: settingNumber("remainingBarHeight", remainingStyle === "logo-bar" ? remainingLogoSize : 4, 2, 48)
   readonly property int remainingBarGap: settingNumber("remainingBarGap", 4, 1, 12)
   readonly property int remainingFontSize: settingNumber("remainingFontSize", 10, 7, 16)
+  // "days" is a 2-day span (now-1.8d .. now+0.2d, snapped to quarter-hours).
+  // Start special: quota start is inside the lookback → left edge is the
+  // quarter-hour at or before the first sample. End special: reset is within
+  // 2 days → right edge is the reset. One special keeps the 2-day width;
+  // both (impossible on a 7-day cycle) allow a shorter span. "cycle" is
+  // first sample .. resetsAt. Charts skip 5h pools; only 7-day+ windows.
+  readonly property string remainingAxis: {
+    var value = String(setting("remainingAxis", "days")).trim().toLowerCase()
+    if (value === "cycle" || value === "window" || value === "period" || value === "quota") return "cycle"
+    return "days"
+  }
+  // Charts skip 5h/session pools. Slack covers 7-day windows that run a hair short.
+  readonly property real remainingMinWindowMs: (7 * 24 * 3600 - 2 * 3600) * 1000
 
   // Same box as Bar.qml ModuleSlot.openPanelIndicator: 55% of the icon
   // slot, 2px thick, 2px in from the desktop-facing edge, centered. The
@@ -116,6 +129,11 @@ Panel {
   readonly property real openPanelIndicatorWidth: vertical ? 0 : remainingMeterLength
   readonly property real openPanelIndicatorHeight: vertical ? remainingMeterLength : 0
 
+  property var grokRemaining: null
+  property var cursorRemaining: null
+  property var codexRemaining: null
+  readonly property string agentsHistoryDir: (Quickshell.env("XDG_STATE_HOME") || ((Quickshell.env("HOME") || "") + "/.local/state")) + "/omarchy/agents/history"
+
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -123,6 +141,24 @@ Panel {
     var n = Number(setting(name, fallback))
     if (!isFinite(n)) n = fallback
     return clamp(Math.round(n), min, max)
+  }
+
+  function persistSettings(values) {
+    var id = root.moduleName || "yourname.agents"
+    var entry = { id: id }
+    var current = root.settings || {}
+    for (var existing in current)
+      if (existing !== "id") entry[existing] = current[existing]
+    for (var key in values) entry[key] = values[key]
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(id, entry)
+  }
+
+  function setRemainingAxis(mode) {
+    var next = String(mode || "") === "cycle" ? "cycle" : "days"
+    if (next === root.remainingAxis) return
+    persistSettings({ remainingAxis: next })
   }
 
   function settingOn(name, fallback) {
@@ -322,6 +358,466 @@ Panel {
     return Math.max(1, minutes) + "m"
   }
 
+  function parseHistory(content) {
+    try {
+      var parsed = JSON.parse(String(content || ""))
+      return parsed && typeof parsed === "object" ? parsed : null
+    } catch (e) {
+      return null
+    }
+  }
+
+  // Charts ignore 5h/session pools. A window counts once it is a week long
+  // (title or startsAt..resetsAt), so monthly Cursor pools still plot.
+  function remainingWindowSpanMs(title, startsAt, resetsAt) {
+    var start = remainingParseMs(startsAt)
+    var reset = remainingParseMs(resetsAt)
+    if (isFinite(start) && isFinite(reset) && reset > start) return reset - start
+    var span = root.windowSpanMs(title)
+    return span > 0 ? span : 0
+  }
+
+  function remainingSeriesIsLong(entry) {
+    if (!entry) return false
+    var title = String(entry.title || entry.id || "")
+    var text = title.toLowerCase()
+    if (root.windowIsLong(text)) return true
+    if (text.indexOf("session") >= 0 || text.indexOf("5h") >= 0 || text.indexOf("5-hour") >= 0
+        || text.indexOf("30m") >= 0 || text.indexOf("hourly") >= 0 || text.indexOf("daily") >= 0)
+      return false
+    var raw = entry.points || []
+    for (var i = raw.length - 1; i >= 0; i--) {
+      var span = remainingWindowSpanMs(title, raw[i] && raw[i].startsAt, raw[i] && raw[i].resetsAt)
+      if (span >= root.remainingMinWindowMs) return true
+    }
+    return remainingWindowSpanMs(title, "", "") >= root.remainingMinWindowMs
+  }
+
+  function remainingChartSeries(series) {
+    var list = series || []
+    var out = []
+    for (var i = 0; i < list.length; i++)
+      if (remainingSeriesIsLong(list[i])) out.push(list[i])
+    return out
+  }
+
+  function remainingSeriesFor(provider) {
+    var id = provider ? String(provider.providerId || "") : ""
+    if (id !== "grok" && id !== "cursor" && id !== "codex") return []
+    var hist = id === "grok" ? root.grokRemaining : id === "cursor" ? root.cursorRemaining : root.codexRemaining
+    if (hist && Array.isArray(hist.series) && hist.series.length > 0)
+      return remainingChartSeries(hist.series)
+    if (provider && Array.isArray(provider.remainingSeries) && provider.remainingSeries.length > 0)
+      return remainingChartSeries(provider.remainingSeries)
+    return remainingChartSeries(root.syntheticSeries(provider))
+  }
+
+  function syntheticSeries(provider) {
+    var windows = root.limitWindows(provider)
+    var nowIso = new Date(root.nowMs).toISOString()
+    var series = []
+    for (var i = 0; i < windows.length; i++) {
+      var w = windows[i]
+      if (!w || !(w.percent >= 0)) continue
+      var start = w.startsAt || ""
+      if (!start && w.resetAt) {
+        var end = root.remainingParseMs(w.resetAt)
+        var span = root.inferredWindowSpanMs(w)
+        if (isFinite(end) && span > 0) start = new Date(end - span).toISOString()
+      }
+      series.push({
+        id: String(w.title || ("limit-" + i)),
+        title: String(w.title || "Limit"),
+        points: [{
+          t: start || nowIso,
+          remaining: root.clamp(1 - Number(w.percent), 0, 1),
+          until: nowIso,
+          startsAt: start,
+          resetsAt: w.resetAt || ""
+        }]
+      })
+    }
+    return series
+  }
+
+  function remainingCss(c) {
+    if (!c) return "#ffffff"
+    var r = Math.round(Number(c.r) * 255)
+    var g = Math.round(Number(c.g) * 255)
+    var b = Math.round(Number(c.b) * 255)
+    var a = (c.a === undefined || c.a === null) ? 1 : Number(c.a)
+    return "rgba(" + r + "," + g + "," + b + "," + a + ")"
+  }
+
+  function remainingParseMs(value) {
+    var text = String(value || "").trim()
+    if (text === "") return NaN
+    text = text.replace(/(\.\d{3})\d+/, "$1")
+    text = text.replace(/([+-]\d{2}):(\d{2})$/, "$1$2")
+    var ms = Date.parse(text)
+    if (isFinite(ms)) return ms
+    var d = new Date(String(value || ""))
+    return isNaN(d.getTime()) ? NaN : d.getTime()
+  }
+
+  function remainingExpand(entry, nowMs) {
+    var pts = []
+    var raw = entry && entry.points ? entry.points : []
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    for (var i = 0; i < raw.length; i++) {
+      var p = raw[i] || {}
+      var t = remainingParseMs(p.t)
+      var y = Number(p.remaining)
+      if (!isFinite(t) || !isFinite(y) || t > nowMs) continue
+      y = root.clamp(y, 0, 1)
+      var winStart = remainingParseMs(p.startsAt)
+      var winReset = remainingParseMs(p.resetsAt)
+      pts.push({ t: t, y: y, startsAt: winStart, resetsAt: winReset })
+      var until = remainingParseMs(p.until)
+      if (isFinite(until) && until > t) {
+        if (until > nowMs) until = nowMs
+        if (until > t) pts.push({ t: until, y: y, startsAt: winStart, resetsAt: winReset })
+      }
+    }
+    if (pts.length === 0) return pts
+    // Hold the last known leftover through now. Do not backfill from the
+    // window start — there is no sample there yet.
+    if (pts[pts.length - 1].t < nowMs)
+      pts.push({
+        t: nowMs,
+        y: pts[pts.length - 1].y,
+        startsAt: pts[pts.length - 1].startsAt,
+        resetsAt: pts[pts.length - 1].resetsAt
+      })
+    return pts
+  }
+
+  function remainingClipToWindow(pts, tMin, tMax) {
+    if (!pts || pts.length === 0) return []
+    if (!(tMax > tMin)) return pts
+    var out = []
+    var hold = null
+    for (var i = 0; i < pts.length; i++) {
+      var t = pts[i].t
+      var y = pts[i].y
+      if (t < tMin) {
+        // Only carry a plateau into the visible window when it belongs to
+        // the same quota cycle. A previous cycle's leftover must not paint
+        // across the new startsAt.
+        var reset = pts[i].resetsAt
+        var start = pts[i].startsAt
+        var covers = (!isFinite(reset) || reset > tMin) && (!isFinite(start) || start <= tMin)
+        if (covers) hold = y
+        continue
+      }
+      if (t > tMax) {
+        if (out.length === 0 && hold !== null)
+          out.push({ t: tMin, y: hold })
+        if (out.length > 0 && out[out.length - 1].t < tMax)
+          out.push({ t: tMax, y: out[out.length - 1].y })
+        else if (out.length === 0 && hold !== null)
+          out.push({ t: tMax, y: hold })
+        return out
+      }
+      if (out.length === 0 && hold !== null && t > tMin)
+        out.push({ t: tMin, y: hold })
+      out.push({ t: t, y: y })
+    }
+    if (out.length === 0 && hold !== null) {
+      out.push({ t: tMin, y: hold })
+      if (tMax > tMin) out.push({ t: tMax, y: hold })
+    }
+    return out
+  }
+
+  // Floor/ceil onto local :00/:15/:30/:45 so the axis labels land on a clock tick.
+  function remainingSnapQuarter(ms, ceil) {
+    var d = new Date(ms)
+    if (isNaN(d.getTime())) return ms
+    var remainder = d.getMinutes() * 60000 + d.getSeconds() * 1000 + d.getMilliseconds()
+    var q = 15 * 60000
+    var hourStart = d.getTime() - remainder
+    if (ceil) return remainder === 0 ? hourStart : hourStart + Math.ceil(remainder / q) * q
+    return hourStart + Math.floor(remainder / q) * q
+  }
+
+  // Current 7d+ quota window: newest startsAt that is not in the future.
+  function remainingCurrentWindow(series, nowMs) {
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    var start = NaN, reset = NaN
+    var list = series || []
+    for (var s = 0; s < list.length; s++) {
+      var raw = list[s] && list[s].points ? list[s].points : []
+      for (var i = 0; i < raw.length; i++) {
+        var p = raw[i] || {}
+        var winStart = remainingParseMs(p.startsAt)
+        var winReset = remainingParseMs(p.resetsAt)
+        if (!isFinite(winStart) || winStart > nowMs) continue
+        if (!isFinite(start) || winStart >= start) {
+          start = winStart
+          if (isFinite(winReset)) reset = winReset
+        }
+      }
+    }
+    return { start: start, reset: reset }
+  }
+
+  function remainingSoonestReset(series, nowMs) {
+    var window = remainingCurrentWindow(series, nowMs)
+    return isFinite(window.reset) ? window.reset : NaN
+  }
+
+  // First sample in the current cycle (t >= startsAt), not the window start.
+  function remainingFirstValueMs(series, afterMs, nowMs) {
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    if (!isFinite(afterMs)) afterMs = -Infinity
+    var first = Infinity
+    var list = series || []
+    for (var s = 0; s < list.length; s++) {
+      var raw = list[s] && list[s].points ? list[s].points : []
+      for (var i = 0; i < raw.length; i++) {
+        var t = remainingParseMs(raw[i] && raw[i].t)
+        if (!isFinite(t) || t < afterMs || t > nowMs) continue
+        if (t < first) first = t
+      }
+    }
+    return isFinite(first) ? first : NaN
+  }
+
+  // days: 2-day span. Start special (quota start inside lookback) moves
+  // tMin to the quarter-hour at or before the first sample. End special
+  // (reset within 2 days) moves tMax to the reset. Exactly one special
+  // keeps width = 2 days; both drop the width constraint. cycle: first
+  // sample (snapped back to a quarter-hour) .. resetsAt.
+  // Data still stops at now either way — future hours stay empty.
+  function remainingBounds(series, nowMs, mode) {
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    var window = remainingCurrentWindow(series, nowMs)
+    var first = remainingFirstValueMs(series, window.start, nowMs)
+    var day = 86400000
+    if (mode === "cycle") {
+      var cMin = isFinite(first) ? remainingSnapQuarter(first, false)
+        : (isFinite(window.start) ? window.start : nowMs - 3600 * 1000)
+      var cMax = isFinite(window.reset) && window.reset > cMin
+        ? window.reset
+        : Math.max(nowMs, cMin + 3600 * 1000)
+      if (cMax < nowMs) cMax = nowMs
+      return { min: cMin, max: cMax }
+    }
+    var tMin0 = remainingSnapQuarter(nowMs - 1.8 * day, false)
+    var tMax0 = remainingSnapQuarter(nowMs + 0.2 * day, true)
+    var startSpecial = isFinite(window.start) && window.start > tMin0 && window.start <= nowMs
+    var endSpecial = isFinite(window.reset) && window.reset > nowMs && window.reset - nowMs < 2 * day
+    var edge = remainingSnapQuarter(isFinite(first) ? first : window.start, false)
+    var tMin, tMax
+    if (startSpecial && endSpecial) {
+      tMin = isFinite(edge) ? edge : tMin0
+      tMax = window.reset
+    } else if (startSpecial) {
+      tMin = isFinite(edge) ? edge : tMin0
+      tMax = tMin + 2 * day
+    } else if (endSpecial) {
+      tMax = window.reset
+      tMin = remainingSnapQuarter(tMax - 2 * day, false)
+    } else {
+      tMin = tMin0
+      tMax = tMax0
+    }
+    if (!(tMax > tMin)) tMax = tMin + 15 * 60000
+    if (tMax < nowMs) tMax = remainingSnapQuarter(nowMs, true)
+    return { min: tMin, max: tMax }
+  }
+
+  function remainingTick(ms) {
+    var d = new Date(ms)
+    if (isNaN(d.getTime())) return ""
+    function pad(n) { return n < 10 ? "0" + n : "" + n }
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
+  }
+
+  function remainingChartSvg(series, w, h, nowMs) {
+    w = Math.max(240, Math.round(Number(w) || 240))
+    h = Math.max(60, Math.round(Number(h) || 92))
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    var left = 36, right = 8, top = 8, bottom = 8
+    var plotW = Math.max(1, w - left - right)
+    var plotH = Math.max(1, h - top - bottom)
+    var bounds = remainingBounds(series, nowMs, root.remainingAxis)
+    var tMin = bounds.min, tMax = bounds.max
+    var span = tMax - tMin
+    if (!(span > 0)) span = 1
+    var ink = remainingCss(root.foreground)
+    var dim = remainingCss(root.dim)
+    var grid = remainingCss(root.alpha(root.foreground, 0.2))
+    function xAt(t) { return left + plotW * ((t - tMin) / span) }
+    function yAt(y) { return top + plotH * (1 - y) }
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">'
+    var marks = [0, 0.5, 1]
+    var labels = ["0%", "50%", "100%"]
+    for (var m = 0; m < marks.length; m++) {
+      var gy = yAt(marks[m]).toFixed(1)
+      svg += '<line x1="' + left + '" y1="' + gy + '" x2="' + (left + plotW) + '" y2="' + gy + '" stroke="' + grid + '" stroke-width="1"/>'
+      svg += '<text x="' + (left - 4) + '" y="' + (Number(gy) + 3) + '" text-anchor="end" fill="' + dim + '" font-size="9">' + labels[m] + '</text>'
+    }
+    var list = series || []
+    for (var s = 0; s < list.length; s++) {
+      var pts = remainingExpand(list[s], nowMs)
+      if (pts.length === 0) continue
+      var d = ""
+      for (var i = 0; i < pts.length; i++)
+        d += (i === 0 ? "M" : "L") + xAt(pts[i].t).toFixed(1) + " " + yAt(pts[i].y).toFixed(1) + " "
+      var stroke = s === 0 ? ink : remainingCss(root.alpha(root.foreground, 0.5))
+      var dash = s === 0 ? "" : ' stroke-dasharray="4 3"'
+      svg += '<path d="' + d + '" fill="none" stroke="' + stroke + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"' + dash + '/>'
+    }
+    svg += "</svg>"
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg)
+  }
+
+  function remainingPlotLayout(series, width, height, nowMs, mode) {
+    var w = Math.max(1, Number(width) || 1)
+    var h = Math.max(1, Number(height) || 1)
+    var left = 36, right = 8, top = 10, bottom = 10
+    var plotW = Math.max(1, w - left - right)
+    var plotH = Math.max(1, h - top - bottom)
+    var yZero = top + plotH
+    if (!isFinite(nowMs)) nowMs = Date.now()
+    var bounds = remainingBounds(series, nowMs, mode)
+    var span = bounds.max - bounds.min
+    if (!(span > 0)) span = 1
+    var fills = []
+    var lines = []
+    var dots = []
+    var nows = []
+    var list = series || []
+    function mapX(t) { return left + plotW * ((t - bounds.min) / span) }
+    function mapY(y) { return top + plotH * (1 - y) }
+    var xNow = mapX(Math.min(Math.max(nowMs, bounds.min), bounds.max))
+    var dataMax = Math.min(nowMs, bounds.max)
+    for (var s = 0; s < list.length; s++) {
+      var pts = remainingClipToWindow(remainingExpand(list[s], nowMs), bounds.min, dataMax)
+      if (pts.length === 1)
+        pts = [pts[0], { t: Math.min(nowMs, dataMax), y: pts[0].y }]
+      if (pts.length === 0) continue
+      var lineBefore = lines.length
+      for (var i = 0; i < pts.length; i++) {
+        var x = Math.min(mapX(pts[i].t), xNow)
+        var y = mapY(pts[i].y)
+        if (i > 0) {
+          var x0 = Math.min(mapX(pts[i - 1].t), xNow)
+          var y0 = mapY(pts[i - 1].y)
+          var dx = x - x0
+          var dy = y - y0
+          var len = Math.sqrt(dx * dx + dy * dy)
+          var fw = Math.abs(dx)
+          if (fw >= 0.5) {
+            var fy = Math.min(y0, y)
+            fills.push({
+              x: Math.min(x0, x),
+              y: fy,
+              width: fw,
+              height: Math.max(0.5, yZero - fy),
+              series: s
+            })
+          }
+          if (len >= 0.8) {
+            lines.push({
+              x: x0,
+              y: y0 - 0.5,
+              width: len,
+              rotation: Math.atan2(dy, dx) * 180 / Math.PI,
+              series: s
+            })
+          }
+        }
+        if (i === 0 || i === pts.length - 1 || pts[i].y !== pts[i - 1].y) {
+          dots.push({ x: x - 0.6, y: y - 0.6, series: s })
+        }
+      }
+      if (lines.length === lineBefore) {
+        var sx = Math.min(mapX(pts[0].t), xNow)
+        var sy = mapY(pts[0].y)
+        var sw = Math.max(0.8, xNow - sx)
+        fills.push({ x: sx, y: sy, width: sw, height: Math.max(0.5, yZero - sy), series: s })
+        lines.push({ x: sx, y: sy - 0.5, width: sw, rotation: 0, series: s })
+        dots.push({ x: sx - 0.6, y: sy - 0.6, series: s })
+      }
+      var last = pts[pts.length - 1]
+      var ny = mapY(last.y)
+      var dash = 3, gap = 3, yDash = ny
+      while (yDash < yZero) {
+        var segH = Math.min(dash, yZero - yDash)
+        if (segH >= 0.6) {
+          nows.push({
+            x: xNow,
+            y: yDash,
+            width: 1,
+            height: segH,
+            series: s
+          })
+        }
+        yDash += dash + gap
+      }
+    }
+    var resets = []
+    var resetX = -1
+    var resetAt = remainingSoonestReset(series, nowMs)
+    if (isFinite(resetAt) && resetAt >= bounds.min && resetAt <= bounds.max) {
+      resetX = Math.min(Math.max(mapX(resetAt), left), left + plotW - 1)
+      var yR = top, dashR = 2, gapR = 2
+      while (yR < yZero) {
+        var hR = Math.min(dashR, yZero - yR)
+        if (hR >= 0.6)
+          resets.push({ x: resetX, y: yR, width: 1, height: hR })
+        yR += dashR + gapR
+      }
+    }
+    var paces = []
+    var win = remainingCurrentWindow(series, nowMs)
+    if (isFinite(win.start) && isFinite(win.reset) && win.reset > win.start) {
+      var tPace0 = Math.max(bounds.min, win.start)
+      var tPace1 = Math.min(bounds.max, win.reset)
+      if (tPace1 > tPace0) {
+        var yPace0 = root.clamp(1 - (tPace0 - win.start) / (win.reset - win.start), 0, 1)
+        var yPace1 = root.clamp(1 - (tPace1 - win.start) / (win.reset - win.start), 0, 1)
+        var px0 = mapX(tPace0)
+        var px1 = mapX(tPace1)
+        var py0 = mapY(yPace0)
+        var py1 = mapY(yPace1)
+        var pdx = px1 - px0
+        var pdy = py1 - py0
+        var plen = Math.sqrt(pdx * pdx + pdy * pdy)
+        if (plen >= 2) {
+          var ux = pdx / plen
+          var uy = pdy / plen
+          var dashP = 4, gapP = 3, pos = 0
+          var rot = Math.atan2(pdy, pdx) * 180 / Math.PI
+          while (pos < plen) {
+            var segP = Math.min(dashP, plen - pos)
+            if (segP >= 0.8) {
+              var along = (pos + segP / 2) / plen
+              var tDash = tPace0 + along * (tPace1 - tPace0)
+              // Opaque at the left / past, fade toward reset and anything after now.
+              var aAlong = 0.9 * (1 - along) + 0.16 * along
+              var aFuture = 1
+              if (tDash > nowMs && tPace1 > nowMs)
+                aFuture = 0.28 + 0.72 * (1 - (tDash - nowMs) / (tPace1 - nowMs))
+              paces.push({
+                x: px0 + ux * pos,
+                y: py0 + uy * pos - 0.5,
+                width: segP,
+                rotation: rot,
+                alpha: root.clamp(aAlong * aFuture, 0.1, 0.92)
+              })
+            }
+            pos += dashP + gapP
+          }
+        }
+      }
+    }
+    return { fills: fills, lines: lines, dots: dots, nows: nows, nowX: xNow, resets: resets, resetX: resetX, paces: paces }
+  }
+
   // ---------------------------------------------------------------- balance
   //
   // Prepaid agents report a credit ledger instead of rate-limit windows: the
@@ -481,12 +977,43 @@ Panel {
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
     usage.refreshLimits()
+    usage.scheduleHistory()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   Main {
     id: usage
     settings: root.settings
+  }
+
+  FileView {
+    path: root.agentsHistoryDir + "/grok.json"
+    watchChanges: true
+    printErrors: false
+    Component.onCompleted: reload()
+    onFileChanged: reload()
+    onLoaded: root.grokRemaining = root.parseHistory(text())
+    onLoadFailed: root.grokRemaining = null
+  }
+
+  FileView {
+    path: root.agentsHistoryDir + "/cursor.json"
+    watchChanges: true
+    printErrors: false
+    Component.onCompleted: reload()
+    onFileChanged: reload()
+    onLoaded: root.cursorRemaining = root.parseHistory(text())
+    onLoadFailed: root.cursorRemaining = null
+  }
+
+  FileView {
+    path: root.agentsHistoryDir + "/codex.json"
+    watchChanges: true
+    printErrors: false
+    Component.onCompleted: reload()
+    onFileChanged: reload()
+    onLoaded: root.codexRemaining = root.parseHistory(text())
+    onLoadFailed: root.codexRemaining = null
   }
 
   // Cheap enough to keep running: it only re-evaluates text bindings, and a
@@ -630,9 +1157,9 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    // Taller than the control panels on purpose: this one is a dashboard, and
-    // the whole point is reading limits and history without scrolling.
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(640))
+    // Grow to the stacked dashboard (three leftover charts) instead of a
+    // 900px cap that hid Codex under the fold; screen edge still clips it.
+    contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -674,6 +1201,38 @@ Panel {
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
+          }
+
+          Item {
+            visible: root.stackedProviders.length > 0
+            width: parent.width
+            implicitHeight: Math.max(axisLabel.implicitHeight, axisGroup.implicitHeight)
+
+            Text {
+              id: axisLabel
+              text: "Chart range"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            ButtonGroup {
+              id: axisGroup
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              focusable: false
+              value: root.remainingAxis
+              options: [
+                { value: "days", label: "2 days" },
+                { value: "cycle", label: "Cycle" }
+              ]
+              onChanged: function(v) { root.setRemainingAxis(v) }
+            }
           }
 
           Repeater {
@@ -781,6 +1340,17 @@ Panel {
         width: block.width
         window: modelData
       }
+    }
+
+    RemainingChart {
+      visible: {
+        var id = block.provider ? String(block.provider.providerId || "") : ""
+        if (id !== "grok" && id !== "cursor" && id !== "codex") return false
+        var series = root.remainingSeriesFor(block.provider)
+        return !!(series && series.length > 0)
+      }
+      width: parent.width
+      series: root.remainingSeriesFor(block.provider)
     }
   }
 
@@ -1054,6 +1624,246 @@ Panel {
       visible: modelHover.containsMouse
       text: root.modelTooltip(modelRow.row)
       fontFamily: root.fontFamily
+    }
+  }
+
+  // Remaining leftover vs time. Plateaus are stored as t..until so idle
+  // polls collapse to a horizontal run; a steep drop is a fast spend.
+  // Fill under the line so a 100% leftover (or a single sample) still reads.
+  component RemainingChart: Column {
+    id: chart
+    property var series: []
+
+    spacing: Style.space(2)
+
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(remainTitle.implicitHeight, remainHint.implicitHeight)
+
+      Text {
+        id: remainTitle
+        text: "Remaining"
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: remainHint
+        text: "Steeper drop = faster spend"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Item {
+      id: plot
+      width: parent.width
+      height: Style.space(84)
+      clip: true
+      readonly property var plotLayout: root.remainingPlotLayout(chart.series, width, height, root.nowMs, root.remainingAxis)
+
+      Rectangle {
+        anchors.fill: parent
+        radius: 4
+        color: root.alpha(root.foreground, 0.08)
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.fills) ? plot.plotLayout.fills : []
+        Rectangle {
+          required property var modelData
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          width: Number(modelData.width)
+          height: Number(modelData.height)
+          color: root.alpha(root.foreground, Number(modelData.series) === 0 ? 0.12 : 0.06)
+        }
+      }
+
+      Repeater {
+        model: [0, 0.5, 1]
+        Rectangle {
+          required property var modelData
+          width: plot.width - 44
+          height: 1
+          x: 36
+          y: 10 + (plot.height - 20) * (1 - Number(modelData))
+          color: root.alpha(root.foreground, 0.18)
+        }
+      }
+
+      Text {
+        text: "100%"
+        x: 2
+        y: 2
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        text: "50%"
+        x: 2
+        anchors.verticalCenter: parent.verticalCenter
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        text: "0%"
+        x: 2
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 2
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.paces) ? plot.plotLayout.paces : []
+        Rectangle {
+          required property var modelData
+          width: Number(modelData.width)
+          height: 1
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          antialiasing: true
+          color: root.alpha(root.urgent, Number(modelData.alpha !== undefined ? modelData.alpha : 0.85))
+          transformOrigin: Item.Left
+          rotation: Number(modelData.rotation)
+        }
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.lines) ? plot.plotLayout.lines : []
+        Rectangle {
+          required property var modelData
+          width: Number(modelData.width)
+          height: 1
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          antialiasing: true
+          color: Number(modelData.series) === 0 ? root.foreground : root.alpha(root.foreground, 0.62)
+          transformOrigin: Item.Left
+          rotation: Number(modelData.rotation)
+        }
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.dots) ? plot.plotLayout.dots : []
+        Rectangle {
+          required property var modelData
+          width: 1.2
+          height: 1.2
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          radius: 0.6
+          antialiasing: true
+          color: Number(modelData.series) === 0 ? root.foreground : root.alpha(root.foreground, 0.62)
+        }
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.resets) ? plot.plotLayout.resets : []
+        Rectangle {
+          required property var modelData
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          width: Number(modelData.width)
+          height: Number(modelData.height)
+          color: root.alpha(root.foreground, 0.42)
+        }
+      }
+
+      Repeater {
+        model: (plot.plotLayout && plot.plotLayout.nows) ? plot.plotLayout.nows : []
+        Rectangle {
+          required property var modelData
+          x: Number(modelData.x)
+          y: Number(modelData.y)
+          width: Number(modelData.width)
+          height: Number(modelData.height)
+          color: root.alpha(root.foreground, Number(modelData.series) === 0 ? 0.32 : 0.18)
+        }
+      }
+    }
+
+    Item {
+      width: parent.width
+      implicitHeight: Style.font.caption + 2
+
+      Text {
+        text: root.remainingTick(root.remainingBounds(chart.series, root.nowMs, root.remainingAxis).min)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.left: parent.left
+      }
+
+      Text {
+        readonly property real nowX: plot.plotLayout && plot.plotLayout.nowX ? Number(plot.plotLayout.nowX) : -1
+        visible: nowX > 56 && nowX < parent.width - 72
+        text: "now"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        x: nowX - implicitWidth / 2
+      }
+
+      Text {
+        readonly property real resetX: plot.plotLayout && plot.plotLayout.resetX > 0 ? Number(plot.plotLayout.resetX) : -1
+        readonly property real nowX: plot.plotLayout && plot.plotLayout.nowX ? Number(plot.plotLayout.nowX) : -1
+        visible: resetX > 72 && resetX < parent.width - 80 && Math.abs(resetX - nowX) > 48
+        text: "reset"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        x: resetX - implicitWidth / 2
+      }
+
+      Text {
+        text: root.remainingTick(root.remainingBounds(chart.series, root.nowMs, root.remainingAxis).max)
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        anchors.right: parent.right
+      }
+    }
+
+    Flow {
+      visible: !!(chart.series && chart.series.length > 1)
+      width: parent.width
+      spacing: Style.space(10)
+
+      Repeater {
+        model: chart.series
+        Row {
+          required property var modelData
+          required property int index
+          spacing: Style.space(4)
+
+          Rectangle {
+            width: Style.space(12)
+            height: 1
+            anchors.verticalCenter: parent.verticalCenter
+            color: index === 0 ? root.foreground : root.alpha(root.foreground, 0.5)
+          }
+
+          Text {
+            text: String((modelData && modelData.title) || "")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+        }
+      }
     }
   }
 }
