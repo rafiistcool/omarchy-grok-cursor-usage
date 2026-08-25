@@ -1675,14 +1675,15 @@ Panel {
       Canvas {
         id: remainFill
         anchors.fill: parent
-        antialiasing: true
-        readonly property var areas: (plot.plotLayout && plot.plotLayout.areas) ? plot.plotLayout.areas : []
-        readonly property real baseline: plot.plotLayout && plot.plotLayout.yZero ? Number(plot.plotLayout.yZero) : height - 10
+        // Do not declare `baseline` / `areas` — Item/Canvas treat some of
+        // those names as FINAL and the whole widget fails to load.
+        readonly property var fillAreas: (plot.plotLayout && plot.plotLayout.areas) ? plot.plotLayout.areas : []
+        readonly property real fillYZero: plot.plotLayout && plot.plotLayout.yZero ? Number(plot.plotLayout.yZero) : height - 10
         readonly property string fill0: root.remainingCss(root.alpha(root.foreground, 0.12))
         readonly property string fill1: root.remainingCss(root.alpha(root.foreground, 0.06))
 
-        onAreasChanged: requestPaint()
-        onBaselineChanged: requestPaint()
+        onFillAreasChanged: requestPaint()
+        onFillYZeroChanged: requestPaint()
         onFill0Changed: requestPaint()
         onFill1Changed: requestPaint()
         onWidthChanged: requestPaint()
@@ -1692,8 +1693,8 @@ Panel {
           var ctx = getContext("2d")
           ctx.reset()
           ctx.clearRect(0, 0, width, height)
-          var list = areas || []
-          var yBase = baseline
+          var list = fillAreas || []
+          var yBase = fillYZero
           for (var s = 0; s < list.length; s++) {
             var area = list[s] || {}
             var pts = area.points || []
