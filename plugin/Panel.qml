@@ -685,7 +685,9 @@ Panel {
     var bounds = remainingBounds(series, nowMs, mode)
     var span = bounds.max - bounds.min
     if (!(span > 0)) span = 1
-    var fills = []
+    // One closed area path per series (first sample .. last), not per-segment
+    // rectangles — adjacent rect seams show up as fine vertical comb lines.
+    var areas = []
     var lines = []
     var dots = []
     var nows = []
@@ -700,26 +702,17 @@ Panel {
         pts = [pts[0], { t: Math.min(nowMs, dataMax), y: pts[0].y }]
       if (pts.length === 0) continue
       var lineBefore = lines.length
+      var areaPts = []
       for (var i = 0; i < pts.length; i++) {
         var x = Math.min(mapX(pts[i].t), xNow)
         var y = mapY(pts[i].y)
+        areaPts.push({ x: x, y: y })
         if (i > 0) {
           var x0 = Math.min(mapX(pts[i - 1].t), xNow)
           var y0 = mapY(pts[i - 1].y)
           var dx = x - x0
           var dy = y - y0
           var len = Math.sqrt(dx * dx + dy * dy)
-          var fw = Math.abs(dx)
-          if (fw >= 0.5) {
-            var fy = Math.min(y0, y)
-            fills.push({
-              x: Math.min(x0, x),
-              y: fy,
-              width: fw,
-              height: Math.max(0.5, yZero - fy),
-              series: s
-            })
-          }
           if (len >= 0.8) {
             lines.push({
               x: x0,
@@ -738,10 +731,12 @@ Panel {
         var sx = Math.min(mapX(pts[0].t), xNow)
         var sy = mapY(pts[0].y)
         var sw = Math.max(0.8, xNow - sx)
-        fills.push({ x: sx, y: sy, width: sw, height: Math.max(0.5, yZero - sy), series: s })
+        areaPts = [{ x: sx, y: sy }, { x: sx + sw, y: sy }]
         lines.push({ x: sx, y: sy - 0.5, width: sw, rotation: 0, series: s })
         dots.push({ x: sx - 0.6, y: sy - 0.6, series: s })
       }
+      if (areaPts.length >= 2)
+        areas.push({ series: s, points: areaPts })
       var last = pts[pts.length - 1]
       var ny = mapY(last.y)
       var dash = 3, gap = 3, yDash = ny
@@ -815,7 +810,7 @@ Panel {
         }
       }
     }
-    return { fills: fills, lines: lines, dots: dots, nows: nows, nowX: xNow, resets: resets, resetX: resetX, paces: paces }
+    return { areas: areas, yZero: yZero, lines: lines, dots: dots, nows: nows, nowX: xNow, resets: resets, resetX: resetX, paces: paces }
   }
 
   // ---------------------------------------------------------------- balance
@@ -1629,7 +1624,8 @@ Panel {
 
   // Remaining leftover vs time. Plateaus are stored as t..until so idle
   // polls collapse to a horizontal run; a steep drop is a fast spend.
-  // Fill under the line so a 100% leftover (or a single sample) still reads.
+  // Fill under the line (Canvas path from first sample to last) so a 100%
+  // leftover or a single sample still reads, without rectangle seam lines.
   component RemainingChart: Column {
     id: chart
     property var series: []
@@ -1674,15 +1670,43 @@ Panel {
         color: root.alpha(root.foreground, 0.08)
       }
 
-      Repeater {
-        model: (plot.plotLayout && plot.plotLayout.fills) ? plot.plotLayout.fills : []
-        Rectangle {
-          required property var modelData
-          x: Number(modelData.x)
-          y: Number(modelData.y)
-          width: Number(modelData.width)
-          height: Number(modelData.height)
-          color: root.alpha(root.foreground, Number(modelData.series) === 0 ? 0.12 : 0.06)
+      // Continuous under-curve fill (first..last sample only). Canvas path
+      // avoids the vertical seam lines from adjacent Rectangle strips.
+      Canvas {
+        id: remainFill
+        anchors.fill: parent
+        antialiasing: true
+        readonly property var areas: (plot.plotLayout && plot.plotLayout.areas) ? plot.plotLayout.areas : []
+        readonly property real baseline: plot.plotLayout && plot.plotLayout.yZero ? Number(plot.plotLayout.yZero) : height - 10
+        readonly property string fill0: root.remainingCss(root.alpha(root.foreground, 0.12))
+        readonly property string fill1: root.remainingCss(root.alpha(root.foreground, 0.06))
+
+        onAreasChanged: requestPaint()
+        onBaselineChanged: requestPaint()
+        onFill0Changed: requestPaint()
+        onFill1Changed: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+
+        onPaint: {
+          var ctx = getContext("2d")
+          ctx.reset()
+          ctx.clearRect(0, 0, width, height)
+          var list = areas || []
+          var yBase = baseline
+          for (var s = 0; s < list.length; s++) {
+            var area = list[s] || {}
+            var pts = area.points || []
+            if (pts.length < 2) continue
+            ctx.beginPath()
+            ctx.moveTo(Number(pts[0].x), yBase)
+            for (var i = 0; i < pts.length; i++)
+              ctx.lineTo(Number(pts[i].x), Number(pts[i].y))
+            ctx.lineTo(Number(pts[pts.length - 1].x), yBase)
+            ctx.closePath()
+            ctx.fillStyle = Number(area.series) === 0 ? fill0 : fill1
+            ctx.fill()
+          }
         }
       }
 
