@@ -129,6 +129,10 @@ Item {
     onTriggered: root.runUpdate("normal")
   }
 
+  readonly property bool refreshing: updateProcess.running
+  readonly property bool historyBusy: historyProcess.running
+  readonly property bool busy: refreshing || historyBusy
+
   Process {
     id: updateProcess
     running: false

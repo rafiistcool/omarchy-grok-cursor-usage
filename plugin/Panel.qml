@@ -18,6 +18,9 @@ Panel {
   readonly property color surface: Color.popups.background
   readonly property color track: Style.selectedFillFor(foreground, Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  // Grok/Codex marks live in the omarchy icon font (U+E904/E905), not in the
+  // user's monospace/text face. Bind icons to "omarchy" like yourname.menu does.
+  readonly property string iconFontFamily: "omarchy"
 
   readonly property var providers: usage.enabledProviders
   // The selection follows the provider, not the slot it happens to sit in: a
@@ -87,6 +90,16 @@ Panel {
       else rest.push(list[i])
     }
     return grok.concat(cursor).concat(rest)
+  }
+  readonly property int firstChartProviderIndex: {
+    var list = stackedProviders || []
+    for (var i = 0; i < list.length; i++) {
+      var id = String(list[i].providerId || "")
+      if (id !== "grok" && id !== "cursor" && id !== "codex") continue
+      var series = remainingSeriesFor(list[i])
+      if (series && series.length > 0) return i
+    }
+    return -1
   }
   readonly property string remainingStyle: {
     var value = String(setting("remainingStyle", "logo-on-bar")).trim().toLowerCase()
@@ -195,8 +208,31 @@ Panel {
     selectedProviderId = providers[wrapped].providerId
   }
 
+  readonly property int refreshCooldownMs: 60000
+  readonly property bool refreshing: usage.busy
+  readonly property double lastRefreshMs: agentLatestUpdatedMs()
+  readonly property bool refreshOnCooldown: lastRefreshMs > 0 && (nowMs - lastRefreshMs) < refreshCooldownMs
+
+  function agentLatestUpdatedMs() {
+    var latest = 0
+    var list = usage.agents || []
+    for (var i = 0; i < list.length; i++) {
+      var rec = list[i] && list[i].record
+      if (!rec) continue
+      var ms = Date.parse(String(rec.updatedAt || ""))
+      if (isFinite(ms) && ms > latest) latest = ms
+    }
+    return latest
+  }
+
   function refreshNow() {
     usage.refreshAll(true)
+    usage.scheduleHistory()
+  }
+
+  function refreshFromButton() {
+    if (refreshing || refreshOnCooldown) return
+    refreshNow()
   }
 
   function launchAgent() {
@@ -971,8 +1007,6 @@ Panel {
     cursorActive = false
     nowMs = Date.now()
     if (panelFlick) panelFlick.contentY = 0
-    usage.refreshLimits()
-    usage.scheduleHistory()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -1088,14 +1122,19 @@ Panel {
       }
     }
 
-    Text {
+    Item {
       visible: root.remainingStyle === "logo-bar" || root.remainingStyle === "logo-on-bar" || root.remainingPct < 0
       anchors.centerIn: parent
-      anchors.verticalCenterOffset: 2
-      text: root.providerGlyph()
-      color: root.alarming ? root.urgent : root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: Style.bar.iconFont
+      width: Style.bar.iconCanvas
+      height: Style.bar.iconCanvas
+
+      Text {
+        anchors.centerIn: parent
+        text: root.providerGlyph()
+        color: root.alarming ? root.urgent : root.foreground
+        font.family: root.iconFontFamily
+        font.pixelSize: Style.bar.iconCanvas
+      }
     }
 
     RemainingMeter {
@@ -1201,7 +1240,7 @@ Panel {
           Item {
             visible: root.stackedProviders.length > 0
             width: parent.width
-            implicitHeight: Math.max(axisLabel.implicitHeight, axisGroup.implicitHeight)
+            implicitHeight: Math.max(axisLabel.implicitHeight, axisControls.implicitHeight)
 
             Text {
               id: axisLabel
@@ -1213,20 +1252,24 @@ Panel {
               anchors.verticalCenter: parent.verticalCenter
             }
 
-            ButtonGroup {
-              id: axisGroup
+            Row {
+              id: axisControls
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.caption
-              focusable: false
-              value: root.remainingAxis
-              options: [
-                { value: "days", label: "2 days" },
-                { value: "cycle", label: "Cycle" }
-              ]
-              onChanged: function(v) { root.setRemainingAxis(v) }
+
+              ButtonGroup {
+                id: axisGroup
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                focusable: false
+                value: root.remainingAxis
+                options: [
+                  { value: "days", label: "2 days" },
+                  { value: "cycle", label: "Cycle" }
+                ]
+                onChanged: function(v) { root.setRemainingAxis(v) }
+              }
             }
           }
 
@@ -1239,6 +1282,7 @@ Panel {
               width: column.width
               provider: modelData
               showDivider: index > 0
+              showChartHeader: index === root.firstChartProviderIndex
             }
           }
 
@@ -1253,6 +1297,27 @@ Panel {
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
           }
+
+          Item {
+            visible: root.stackedProviders.length > 0
+            width: parent.width
+            implicitHeight: refreshBtn.implicitHeight + Style.space(4)
+
+            Button {
+              id: refreshBtn
+              anchors.horizontalCenter: parent.horizontalCenter
+              anchors.bottom: parent.bottom
+              text: root.refreshing ? "刷新中…" : "刷新"
+              foreground: root.refreshOnCooldown && !root.refreshing ? root.dim : root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              horizontalPadding: 0
+              verticalPadding: 0
+              enabled: !root.refreshing && !root.refreshOnCooldown
+              opacity: root.refreshOnCooldown && !root.refreshing ? 0.55 : 1
+              onClicked: root.refreshFromButton()
+            }
+          }
         }
       }
     }
@@ -1262,6 +1327,7 @@ Panel {
     id: block
     property var provider: null
     property bool showDivider: false
+    property bool showChartHeader: false
 
     readonly property var windows: root.limitWindows(block.provider)
     spacing: Style.space(10)
@@ -1290,7 +1356,7 @@ Panel {
             anchors.centerIn: parent
             text: pid === "grok" ? "\ue904" : "\ue905"
             color: root.foreground
-            font.family: root.fontFamily
+            font.family: root.iconFontFamily
             font.pixelSize: parent.height
           }
 
@@ -1346,6 +1412,7 @@ Panel {
       }
       width: parent.width
       series: root.remainingSeriesFor(block.provider)
+      showHeader: block.showChartHeader
     }
   }
 
@@ -1399,25 +1466,47 @@ Panel {
       paceMark: root.paceRemaining(limitRow.window)
     }
 
-    Text {
-      id: resetText
+    Item {
+      id: statusLine
       width: parent.width
-      text: {
+      implicitHeight: Math.max(resetText.implicitHeight, paceText.implicitHeight, 1)
+      visible: resetPart !== "" || pacePart !== ""
+
+      readonly property string resetPart: {
         var remainingMs = root.resetMsFor(limitRow.window)
         return remainingMs > 0 ? "Resets in " + root.formatDuration(remainingMs) : ""
       }
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-    }
+      readonly property string pacePart: root.paceCaption(limitRow.window)
 
-    Text {
-      visible: text !== ""
-      width: parent.width
-      text: root.paceCaption(limitRow.window)
-      color: root.dim
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      Text {
+        id: paceText
+        visible: statusLine.pacePart !== ""
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: statusLine.pacePart
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignRight
+        elide: Text.ElideLeft
+        maximumLineCount: 1
+      }
+
+      Text {
+        id: resetText
+        visible: statusLine.resetPart !== ""
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.right: paceText.visible ? paceText.left : parent.right
+        anchors.rightMargin: paceText.visible ? Style.space(8) : 0
+        text: statusLine.resetPart
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        horizontalAlignment: Text.AlignLeft
+        elide: Text.ElideRight
+        maximumLineCount: 1
+      }
     }
   }
 
@@ -1629,10 +1718,12 @@ Panel {
   component RemainingChart: Column {
     id: chart
     property var series: []
+    property bool showHeader: true
 
     spacing: Style.space(2)
 
     Item {
+      visible: chart.showHeader
       width: parent.width
       implicitHeight: Math.max(remainTitle.implicitHeight, remainHint.implicitHeight)
 
