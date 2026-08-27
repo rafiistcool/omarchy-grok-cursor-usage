@@ -115,6 +115,22 @@ charts only plot windows about 7 days or longer.
 
 Do not commit usage or history files. They can include spend rates.
 
+## Developing
+
+**Edit `plugin/` in this repository, not the installed copy under
+`~/.config/omarchy/plugins/$USER.agents/`.** The two trees are related by
+`install.sh` only; nothing syncs them automatically.
+
+```bash
+./install.sh --force      # copy plugin/ → ~/.config/omarchy/plugins/$USER.agents/
+omarchy restart shell     # reload Quickshell
+git push                  # after commit; others pull + reinstall
+```
+
+Source files use the placeholder id `yourname.agents`; install rewrites it to
+your login. Full workflow, recovery if you edited the wrong tree, and why
+`omarchy plugin update` does not apply: **[plugin/README.md](plugin/README.md)**.
+
 ## Settings
 
 Top-level keys on the bar entry (`omarchy bar set $USER.agents …`):
