@@ -671,6 +671,54 @@ Panel {
     return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
   }
 
+  // Read the Y value from the same clipped, linearly connected points that
+  // are painted below. A sloped segment between polls is an estimate; flat
+  // plateaus are known because history.py stores their t..until interval.
+  function remainingValueAt(entry, targetMs, nowMs, bounds) {
+    if (!entry || !bounds || !isFinite(targetMs) || !isFinite(nowMs)) return null
+    var dataMax = Math.min(nowMs, Number(bounds.max))
+    if (targetMs > dataMax || targetMs < Number(bounds.min)) return null
+    var pts = remainingClipToWindow(remainingExpand(entry, nowMs), Number(bounds.min), dataMax)
+    if (pts.length === 0 || targetMs < pts[0].t) return null
+    var prev = pts[0]
+    for (var i = 1; i < pts.length; i++) {
+      var next = pts[i]
+      if (targetMs > next.t) {
+        prev = next
+        continue
+      }
+      if (next.t <= prev.t)
+        return { y: next.y, estimated: false }
+      var ratio = root.clamp((targetMs - prev.t) / (next.t - prev.t), 0, 1)
+      return {
+        y: prev.y + (next.y - prev.y) * ratio,
+        estimated: Math.abs(next.y - prev.y) > 0.00005 && ratio > 0 && ratio < 1
+      }
+    }
+    return targetMs <= prev.t ? { y: prev.y, estimated: false } : null
+  }
+
+  function remainingValuesAt(series, targetMs, nowMs, bounds) {
+    var values = []
+    var list = series || []
+    for (var i = 0; i < list.length; i++) {
+      var value = remainingValueAt(list[i], targetMs, nowMs, bounds)
+      if (!value) continue
+      values.push({
+        series: i,
+        title: String((list[i] && (list[i].title || list[i].id)) || ("Limit " + (i + 1))),
+        y: value.y,
+        estimated: value.estimated
+      })
+    }
+    return values
+  }
+
+  function remainingPercentText(value) {
+    var pct = Math.round(root.clamp(Number(value), 0, 1) * 1000) / 10
+    return Math.abs(pct - Math.round(pct)) < 0.05 ? Math.round(pct) + "%" : pct.toFixed(1) + "%"
+  }
+
   function remainingChartSvg(series, w, h, nowMs) {
     w = Math.max(240, Math.round(Number(w) || 240))
     h = Math.max(60, Math.round(Number(h) || 92))
@@ -1753,7 +1801,48 @@ Panel {
       width: parent.width
       height: Style.space(84)
       clip: true
+      readonly property real plotLeft: 36
+      readonly property real plotRight: 8
+      readonly property real plotTop: 10
+      readonly property real plotBottom: 10
       readonly property var plotLayout: root.remainingPlotLayout(chart.series, width, height, root.nowMs, root.remainingAxis)
+      readonly property var hoverBounds: root.remainingBounds(chart.series, root.nowMs, root.remainingAxis)
+      readonly property bool hoverActive: chartHover.containsMouse
+        && chartHover.mouseX >= plotLeft && chartHover.mouseX <= width - plotRight
+      readonly property real hoverX: hoverActive ? chartHover.mouseX : -1
+      readonly property real hoverTimeMs: {
+        if (!hoverActive) return NaN
+        var span = Number(hoverBounds.max) - Number(hoverBounds.min)
+        var ratio = root.clamp((hoverX - plotLeft) / Math.max(1, width - plotLeft - plotRight), 0, 1)
+        return Number(hoverBounds.min) + ratio * span
+      }
+      readonly property var hoverValues: hoverActive
+        ? root.remainingValuesAt(chart.series, hoverTimeMs, root.nowMs, hoverBounds) : []
+      readonly property bool hoverHasValues: hoverValues.length > 0
+
+      function yForHover(value) {
+        return plotTop + Math.max(1, height - plotTop - plotBottom) * (1 - root.clamp(Number(value), 0, 1))
+      }
+
+      function labelYForHover(index, labelHeight) {
+        if (index < 0 || index >= hoverValues.length) return plotTop
+        var gap = Style.space(4)
+        var lineY = yForHover(hoverValues[index].y)
+        var y = lineY - labelHeight - gap
+        if (y < plotTop) y = lineY + gap
+        y = root.clamp(y, plotTop, height - plotBottom - labelHeight)
+        // Two almost-overlapping series still need two readable value rows.
+        if (index > 0) {
+          var previousY = labelYForHover(index - 1, labelHeight)
+          if (Math.abs(y - previousY) < labelHeight) {
+            var below = lineY + gap
+            y = below + labelHeight <= height - plotBottom
+              ? below
+              : Math.max(plotTop, previousY - labelHeight)
+          }
+        }
+        return y
+      }
 
       Rectangle {
         anchors.fill: parent
@@ -1907,6 +1996,62 @@ Panel {
           width: Number(modelData.width)
           height: Number(modelData.height)
           color: root.alpha(root.foreground, Number(modelData.series) === 0 ? 0.32 : 0.18)
+        }
+      }
+
+      Rectangle {
+        visible: plot.hoverActive && plot.hoverHasValues
+        x: Math.round(plot.hoverX)
+        y: plot.plotTop
+        width: 1
+        height: plot.height - plot.plotTop - plot.plotBottom
+        color: root.alpha(root.foreground, 0.58)
+      }
+
+      Repeater {
+        model: plot.hoverValues
+        Rectangle {
+          required property var modelData
+          width: Style.space(5)
+          height: width
+          radius: width / 2
+          x: plot.hoverX - width / 2
+          y: plot.yForHover(modelData.y) - height / 2
+          color: Number(modelData.series) === 0 ? root.foreground : root.alpha(root.foreground, 0.7)
+          border.width: 1
+          border.color: root.surface
+        }
+      }
+
+      MouseArea {
+        id: chartHover
+        anchors.fill: parent
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+        cursorShape: plot.hoverActive ? Qt.CrossCursor : Qt.ArrowCursor
+      }
+
+      Repeater {
+        model: plot.hoverValues
+        Text {
+          required property var modelData
+          required property int index
+          visible: plot.hoverActive && plot.hoverHasValues
+          text: (modelData.estimated ? "~" : "") + root.remainingPercentText(modelData.y)
+          color: Number(modelData.series) === 0 ? root.foreground : root.alpha(root.foreground, 0.72)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          x: {
+            var gap = Style.space(6)
+            var beside = plot.hoverX + gap
+            if (beside + implicitWidth > plot.width - plot.plotRight)
+              beside = plot.hoverX - implicitWidth - gap
+            return Math.max(plot.plotLeft, beside)
+          }
+          // Each value follows its own line, offset vertically so the pointer
+          // and the sampled dot cannot cover it.
+          y: plot.labelYForHover(index, implicitHeight)
         }
       }
     }
