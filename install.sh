@@ -54,7 +54,7 @@ PY
 fi
 
 mkdir -p "$AGENTS_DIR"
-for name in omarchy-agent-usage-grok omarchy-agent-usage-cursor omarchy-agent-usage-codex run-usage-update omarchy-grok-usage-watch; do
+for name in omarchy-agent-usage-grok omarchy-agent-usage-cursor omarchy-agent-usage-codex omarchy-agent-usage-antigravity run-usage-update omarchy-grok-usage-watch; do
   install -m 0755 "$ROOT/collectors/$name" "$AGENTS_DIR/$name"
 done
 log "installed collectors: $AGENTS_DIR"

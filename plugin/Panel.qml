@@ -95,7 +95,7 @@ Panel {
     var list = stackedProviders || []
     for (var i = 0; i < list.length; i++) {
       var id = String(list[i].providerId || "")
-      if (id !== "grok" && id !== "cursor" && id !== "codex") continue
+      if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") continue
       var series = remainingSeriesFor(list[i])
       if (series && series.length > 0) return i
     }
@@ -145,6 +145,7 @@ Panel {
   property var grokRemaining: null
   property var cursorRemaining: null
   property var codexRemaining: null
+  property var antigravityRemaining: null
   readonly property string agentsHistoryDir: (Quickshell.env("XDG_STATE_HOME") || ((Quickshell.env("HOME") || "") + "/.local/state")) + "/omarchy/agents/history"
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -439,8 +440,8 @@ Panel {
 
   function remainingSeriesFor(provider) {
     var id = provider ? String(provider.providerId || "") : ""
-    if (id !== "grok" && id !== "cursor" && id !== "codex") return []
-    var hist = id === "grok" ? root.grokRemaining : id === "cursor" ? root.cursorRemaining : root.codexRemaining
+    if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") return []
+    var hist = id === "grok" ? root.grokRemaining : id === "cursor" ? root.cursorRemaining : id === "antigravity" ? root.antigravityRemaining : root.codexRemaining
     if (hist && Array.isArray(hist.series) && hist.series.length > 0)
       return remainingChartSeries(hist.series)
     if (provider && Array.isArray(provider.remainingSeries) && provider.remainingSeries.length > 0)
@@ -1093,6 +1094,16 @@ Panel {
     onLoadFailed: root.codexRemaining = null
   }
 
+  FileView {
+    path: root.agentsHistoryDir + "/antigravity.json"
+    watchChanges: true
+    printErrors: false
+    Component.onCompleted: reload()
+    onFileChanged: reload()
+    onLoaded: root.antigravityRemaining = root.parseHistory(text())
+    onLoadFailed: root.antigravityRemaining = null
+  }
+
   // Cheap enough to keep running: it only re-evaluates text bindings, and a
   // stale "resets in 2h" on a panel that is open is worse than a timer.
   Timer {
@@ -1454,7 +1465,7 @@ Panel {
     RemainingChart {
       visible: {
         var id = block.provider ? String(block.provider.providerId || "") : ""
-        if (id !== "grok" && id !== "cursor" && id !== "codex") return false
+        if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") return false
         var series = root.remainingSeriesFor(block.provider)
         return !!(series && series.length > 0)
       }

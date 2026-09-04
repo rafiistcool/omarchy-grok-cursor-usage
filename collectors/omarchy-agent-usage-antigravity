@@ -1,0 +1,332 @@
+#!/usr/bin/python3
+# omarchy:summary=Print the Antigravity usage record as JSON
+# omarchy:args=[--force] [--limits-only] [--write]
+# omarchy:hidden=true
+"""Collect Antigravity subscription and quota usage into one display-ready JSON record.
+
+Connects to the local LanguageServerService via Connect protocol
+to fetch quota limits (weekly and 5-hour windows for Gemini and 3P models)
+and user plan info. Caches the result in ~/.cache/omarchy/agent-usage/antigravity.json.
+The agents panel only ever reads the JSON this prints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "antigravity"
+AGENT_NAME = "Antigravity"
+AUTH_HELP = "Start Antigravity or run `agy` to restore subscription usage."
+PROBE_MIN_INTERVAL_SECONDS = 15
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def usage_dir() -> Path:
+  state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+  path = state / "omarchy" / "agents" / "usage"
+  path.mkdir(parents=True, exist_ok=True)
+  return path
+
+
+def empty_stats() -> dict[str, Any]:
+  return {
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [],
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+    "modelUsage": {},
+  }
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(tmp_name)
+  try:
+    with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.exists():
+    return None
+  try:
+    age = time.time() - path.stat().st_mtime
+    if 0 <= age <= max_age_seconds:
+      data = json.loads(path.read_text(encoding="utf-8"))
+      return data if isinstance(data, dict) else None
+  except Exception:
+    return None
+  return None
+
+
+def get_candidate_ports() -> list[int]:
+  ports: list[int] = []
+  # 1. ss command
+  try:
+    out = subprocess.check_output(["ss", "-tlnp", "-H"], text=True, timeout=2)
+    for line in out.splitlines():
+      if "agy" in line or "antigravity" in line:
+        m = re.search(r"127\.0\.0\.1:(\d+)", line)
+        if m:
+          ports.append(int(m.group(1)))
+  except Exception:
+    pass
+
+  # 2. /proc fallback
+  if not ports:
+    try:
+      out = subprocess.check_output(
+        ["pgrep", "-u", str(os.getuid()), "-f", "agy|antigravity"],
+        text=True,
+        timeout=2,
+      )
+      pids = [int(p) for p in out.split() if p.strip()]
+      for pid in pids:
+        fd_dir = Path(f"/proc/{pid}/fd")
+        if not fd_dir.is_dir():
+          continue
+        for link in fd_dir.iterdir():
+          try:
+            target = os.readlink(link)
+            m = re.match(r"socket:\[(\d+)\]", target)
+            if m:
+              inode = m.group(1)
+              with open("/proc/net/tcp", encoding="utf-8") as f:
+                for t_line in f:
+                  parts = t_line.split()
+                  if len(parts) > 9 and parts[9] == inode:
+                    local_addr = parts[1]
+                    port_hex = local_addr.split(":")[1]
+                    ports.append(int(port_hex, 16))
+          except Exception:
+            continue
+    except Exception:
+      pass
+
+  seen: set[int] = set()
+  res: list[int] = []
+  for p in ports:
+    if p not in seen:
+      seen.add(p)
+      res.append(p)
+  return res
+
+
+def fetch_language_server_rpc(ports: list[int]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+  ctx = ssl.create_default_context()
+  ctx.check_hostname = False
+  ctx.verify_mode = ssl.CERT_NONE
+
+  quota_res: dict[str, Any] | None = None
+  status_res: dict[str, Any] | None = None
+  working_port: int | None = None
+  working_proto: str | None = None
+
+  for port in ports:
+    for proto in ("https", "http"):
+      url = f"{proto}://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+      req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={
+          "Content-Type": "application/json",
+          "Connect-Protocol-Version": "1",
+        },
+      )
+      try:
+        with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+          quota_res = json.loads(resp.read().decode("utf-8", errors="replace"))
+          working_port = port
+          working_proto = proto
+          break
+      except Exception:
+        continue
+    if quota_res:
+      break
+
+  if working_port and working_proto:
+    url = f"{working_proto}://127.0.0.1:{working_port}/exa.language_server_pb.LanguageServerService/GetUserStatus"
+    req = urllib.request.Request(
+      url,
+      data=b"{}",
+      headers={
+        "Content-Type": "application/json",
+        "Connect-Protocol-Version": "1",
+      },
+    )
+    try:
+      with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+        status_res = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+      pass
+
+  return quota_res, status_res
+
+
+def parse_limits(quota_data: dict[str, Any]) -> list[dict[str, Any]]:
+  if not quota_data or not isinstance(quota_data, dict):
+    return []
+  groups = quota_data.get("response", {}).get("groups", [])
+  limits = []
+
+  for group in groups:
+    group_name = str(group.get("displayName") or "")
+    if "gemini" in group_name.lower():
+      prefix = "Gemini"
+    elif "claude" in group_name.lower() or "gpt" in group_name.lower():
+      prefix = "Claude/GPT"
+    else:
+      prefix = group_name.split()[0] if group_name else "Limit"
+
+    buckets = group.get("buckets", [])
+    for bucket in buckets:
+      window = str(bucket.get("window") or "")
+      rem_frac = bucket.get("remainingFraction")
+      if rem_frac is None:
+        continue
+      try:
+        rem_frac = float(rem_frac)
+      except (ValueError, TypeError):
+        continue
+      used = max(0.0, min(1.0, 1.0 - rem_frac))
+      reset_time = str(bucket.get("resetTime") or "")
+
+      if window == "weekly":
+        title = f"{prefix} Weekly"
+        label = f"{prefix} Weekly"
+        span = timedelta(days=7)
+      elif window == "5h":
+        title = f"{prefix} 5-Hour"
+        label = f"{prefix} 5-Hour"
+        span = timedelta(hours=5)
+      else:
+        title = f"{prefix} {window.capitalize()}"
+        label = f"{prefix} {window.capitalize()}"
+        span = None
+
+      starts_at = ""
+      if reset_time and span:
+        try:
+          rt = reset_time.replace("Z", "+00:00")
+          end_dt = datetime.fromisoformat(rt)
+          starts_at = (end_dt - span).astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        except Exception:
+          starts_at = ""
+
+      limits.append({
+        "label": label,
+        "title": title,
+        "percent": round(used, 4),
+        "startsAt": starts_at,
+        "resetsAt": reset_time,
+      })
+  return limits
+
+
+def collect(force: bool) -> dict[str, Any]:
+  cache_file = cache_root() / "antigravity.json"
+  if not force:
+    cached = read_fresh_json(cache_file, PROBE_MIN_INTERVAL_SECONDS)
+    if cached:
+      return cached
+
+  ports = get_candidate_ports()
+  quota_data, status_data = fetch_language_server_rpc(ports)
+
+  if quota_data:
+    plan_name = ""
+    email = ""
+    if status_data:
+      user_status = status_data.get("userStatus", {})
+      plan_name = user_status.get("planStatus", {}).get("planInfo", {}).get("planName", "")
+      email = user_status.get("email", "")
+
+    limits = parse_limits(quota_data)
+    record = {
+      "schemaVersion": 1,
+      "id": AGENT_ID,
+      "name": AGENT_NAME,
+      "updatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+      "ready": True,
+      "hasLocalStats": False,
+      "hasPromptStats": False,
+      "scope": "account",
+      "tierLabel": plan_name or "Pro",
+      "usageStatusText": email,
+      "authHelpText": "",
+      "limits": limits,
+      "balance": None,
+      **empty_stats(),
+    }
+    write_json(cache_file, record)
+    return record
+
+  # RPC failed or no port: fallback to cached record if present
+  cached = read_fresh_json(cache_file, 86400 * 7)
+  if cached:
+    return cached
+
+  # Nothing found
+  return {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "ready": False,
+    "hasLocalStats": False,
+    "hasPromptStats": False,
+    "scope": "account",
+    "tierLabel": "",
+    "usageStatusText": "Antigravity unavailable",
+    "authHelpText": AUTH_HELP,
+    "limits": [],
+    "balance": None,
+    **empty_stats(),
+  }
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.add_argument("--write", action="store_true")
+  args = parser.parse_args()
+
+  record = collect(args.force)
+  payload = json.dumps(record, indent=2, sort_keys=True)
+  if args.write:
+    write_json(usage_dir() / f"{AGENT_ID}.json", record)
+  print(payload)
+  return 0 if record.get("ready") else 1
+
+
+if __name__ == "__main__":
+  sys.exit(main())

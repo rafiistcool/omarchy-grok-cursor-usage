@@ -38,6 +38,9 @@
         },
         "fireworks": {
           "enabled": true
+        },
+        "antigravity": {
+          "enabled": true
         }
       },
       "refreshIntervalSec": 900,

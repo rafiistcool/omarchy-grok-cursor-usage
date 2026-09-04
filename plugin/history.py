@@ -18,7 +18,7 @@ from typing import Any
 
 sys.dont_write_bytecode = True
 
-AGENT_IDS = ("grok", "cursor", "codex")
+AGENT_IDS = ("grok", "cursor", "codex", "antigravity")
 REMAINING_DECIMALS = 4
 MAX_AGE_DAYS = 21
 MAX_POINTS = 500

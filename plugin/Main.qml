@@ -350,6 +350,15 @@ Item {
     onLoadFailed: root.applyHistory("codex", "")
   }
 
+  FileView {
+    path: root.historyDir + "/antigravity.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("antigravity", text())
+    onLoadFailed: root.applyHistory("antigravity", "")
+  }
+
   function historyScriptPath() {
     var url = Qt.resolvedUrl("history.py").toString()
     if (url.indexOf("file://") === 0) return decodeURIComponent(url.substring(7))
