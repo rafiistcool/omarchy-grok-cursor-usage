@@ -173,7 +173,7 @@ def dashboard_post(url: str, token: str) -> dict[str, Any]:
   return {"ok": True, "payload": payload if isinstance(payload, dict) else {}}
 
 
-USED_PERCENT_RE = re.compile(r"used\s+(\\d+(?:\\.\\d+)?)\\s*%", re.I)
+USED_PERCENT_RE = re.compile("used +([0-9]+(?:[.][0-9]+)?) *%", re.I)
 
 
 def clamp_ratio(n: float) -> float:
