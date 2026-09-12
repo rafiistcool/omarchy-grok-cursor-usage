@@ -81,21 +81,22 @@ Panel {
     return list.length > 0 ? list[0] : null
   }
   readonly property var stackedProviders: {
-    var grok = [], cursor = [], rest = []
+    var grok = [], grokbot = [], cursor = [], rest = []
     var list = providers || []
     for (var i = 0; i < list.length; i++) {
       var id = String(list[i].providerId || "")
       if (id === "grok") grok.push(list[i])
+      else if (id === "grokbot") grokbot.push(list[i])
       else if (id === "cursor") cursor.push(list[i])
       else rest.push(list[i])
     }
-    return grok.concat(cursor).concat(rest)
+    return grok.concat(grokbot).concat(cursor).concat(rest)
   }
   readonly property int firstChartProviderIndex: {
     var list = stackedProviders || []
     for (var i = 0; i < list.length; i++) {
       var id = String(list[i].providerId || "")
-      if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") continue
+      if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") continue
       var series = remainingSeriesFor(list[i])
       if (series && series.length > 0) return i
     }
@@ -143,6 +144,7 @@ Panel {
   readonly property real openPanelIndicatorHeight: vertical ? remainingMeterLength : 0
 
   property var grokRemaining: null
+  property var grokbotRemaining: null
   property var cursorRemaining: null
   property var codexRemaining: null
   property var antigravityRemaining: null
@@ -440,8 +442,16 @@ Panel {
 
   function remainingSeriesFor(provider) {
     var id = provider ? String(provider.providerId || "") : ""
-    if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") return []
-    var hist = id === "grok" ? root.grokRemaining : id === "cursor" ? root.cursorRemaining : id === "antigravity" ? root.antigravityRemaining : root.codexRemaining
+    if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") return []
+    var hist = id === "grok"
+      ? root.grokRemaining
+      : id === "grokbot"
+        ? root.grokbotRemaining
+        : id === "cursor"
+          ? root.cursorRemaining
+          : id === "antigravity"
+            ? root.antigravityRemaining
+            : root.codexRemaining
     if (hist && Array.isArray(hist.series) && hist.series.length > 0)
       return remainingChartSeries(hist.series)
     if (provider && Array.isArray(provider.remainingSeries) && provider.remainingSeries.length > 0)
@@ -1075,6 +1085,16 @@ Panel {
   }
 
   FileView {
+    path: root.agentsHistoryDir + "/grokbot.json"
+    watchChanges: true
+    printErrors: false
+    Component.onCompleted: reload()
+    onFileChanged: reload()
+    onLoaded: root.grokbotRemaining = root.parseHistory(text())
+    onLoadFailed: root.grokbotRemaining = null
+  }
+
+  FileView {
     path: root.agentsHistoryDir + "/cursor.json"
     watchChanges: true
     printErrors: false
@@ -1465,7 +1485,7 @@ Panel {
     RemainingChart {
       visible: {
         var id = block.provider ? String(block.provider.providerId || "") : ""
-        if (id !== "grok" && id !== "cursor" && id !== "codex" && id !== "antigravity") return false
+        if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") return false
         var series = root.remainingSeriesFor(block.provider)
         return !!(series && series.length > 0)
       }
