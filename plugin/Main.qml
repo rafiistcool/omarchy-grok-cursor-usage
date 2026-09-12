@@ -298,7 +298,7 @@ Item {
 
   // ------------------------------------------------ remaining history
 
-  property var remainingHistory: ({ grok: null, cursor: null, codex: null })
+  property var remainingHistory: ({ grok: null, grokbot: null, cursor: null, codex: null, antigravity: null })
   property bool historyPending: false
 
   Timer {
@@ -330,6 +330,15 @@ Item {
     onFileChanged: reload()
     onLoaded: root.applyHistory("grok", text())
     onLoadFailed: root.applyHistory("grok", "")
+  }
+
+  FileView {
+    path: root.historyDir + "/grokbot.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("grokbot", text())
+    onLoadFailed: root.applyHistory("grokbot", "")
   }
 
   FileView {
@@ -386,7 +395,13 @@ Item {
     } catch (e) {
       parsed = null
     }
-    var next = { grok: remainingHistory.grok, cursor: remainingHistory.cursor, codex: remainingHistory.codex }
+    var next = {
+      grok: remainingHistory.grok,
+      grokbot: remainingHistory.grokbot,
+      cursor: remainingHistory.cursor,
+      codex: remainingHistory.codex,
+      antigravity: remainingHistory.antigravity
+    }
     try {
       if (JSON.stringify(next[id]) === JSON.stringify(parsed)) return
     } catch (e2) {}

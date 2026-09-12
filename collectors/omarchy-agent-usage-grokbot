@@ -1,0 +1,265 @@
+#!/usr/bin/python3
+"""Collect Grok Bot (Sand) usage from Cursor's signed-in app session.
+
+Uses the same Cursor token in ~/.config/Cursor/User/globalStorage/state.vscdb
+as other Cursor-based collectors. The agents panel only reads the JSON this
+prints.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "grokbot"
+AGENT_NAME = "Grok Bot"
+AUTH_HELP = "Sign in to the Cursor app to restore Grok Bot usage."
+USAGE_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
+PROBE_MIN_INTERVAL_SECONDS = 15
+
+
+def cursor_state_db() -> Path:
+  config = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+  return config / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def usage_dir() -> Path:
+  state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+  path = state / "omarchy" / "agents" / "usage"
+  path.mkdir(parents=True, exist_ok=True)
+  return path
+
+
+def empty_stats() -> dict[str, Any]:
+  return {
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [],
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+    "modelUsage": {},
+  }
+
+
+def base_record(**overrides: Any) -> dict[str, Any]:
+  record: dict[str, Any] = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": datetime.now(timezone.utc).isoformat(),
+    "ready": False,
+    "hasLocalStats": False,
+    "hasPromptStats": False,
+    "scope": "account",
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": "",
+    "limits": [],
+  }
+  record.update(empty_stats())
+  record.update(overrides)
+  return record
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(tmp_name)
+  try:
+    with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.exists():
+    return None
+  try:
+    age = time.time() - path.stat().st_mtime
+    if 0 <= age <= max_age_seconds:
+      data = json.loads(path.read_text(encoding="utf-8"))
+      return data if isinstance(data, dict) else None
+  except Exception:
+    return None
+  return None
+
+
+def read_item(db: Path, key: str) -> str:
+  if not db.is_file():
+    return ""
+  try:
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  except sqlite3.Error:
+    return ""
+  try:
+    row = conn.execute("SELECT value FROM ItemTable WHERE key = ?", (key,)).fetchone()
+  except sqlite3.Error:
+    return ""
+  finally:
+    conn.close()
+  return str(row[0] or "") if row else ""
+
+
+def clamp_ratio(n: float) -> float:
+  return min(1.0, max(0.0, n))
+
+
+def used_ratio(value: Any) -> float | None:
+  """Convert a Cursor dashboard percent field to a used fraction 0..1.
+
+  usagePercent is always 0–100, including values below 1.
+  """
+  try:
+    n = float(value)
+  except (TypeError, ValueError):
+    return None
+  if n != n:
+    return None
+  return clamp_ratio(n / 100.0)
+
+
+def dashboard_post(url: str, token: str) -> dict[str, Any]:
+  request = urllib.request.Request(
+    url,
+    data=b"{}",
+    method="POST",
+    headers={
+      "Authorization": "Bearer " + token,
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "Connect-Protocol-Version": "1",
+      "User-Agent": "Mozilla/5.0",
+    },
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=15) as response:
+      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  except urllib.error.HTTPError as error:
+    if error.code in (401, 403):
+      return {"ok": False, "auth": True, "helpText": "Cursor rejected the saved sign-in. Open the Cursor app and sign in."}
+    return {"ok": False, "helpText": f"Cursor usage returned status {error.code}."}
+  except Exception:
+    return {"ok": False, "transport": True, "helpText": "Couldn't reach Cursor's usage endpoint. Retrying shortly."}
+  return {"ok": True, "payload": payload if isinstance(payload, dict) else {}}
+
+
+def parse_usage(payload: dict[str, Any]) -> dict[str, Any]:
+  has_included = payload.get("hasNonZeroIncludedLimit") is True
+  tier = str(payload.get("cursorPlanName") or payload.get("grokPlanLabel") or "").strip()
+  if not has_included:
+    return {"noIncluded": True, "tierLabel": tier}
+
+  percent = used_ratio(payload.get("usagePercent"))
+  if percent is None:
+    return {}
+
+  limits = [{
+    "label": "Weekly limit",
+    "title": "Weekly",
+    "percent": percent,
+    "startsAt": str(payload.get("currentPeriodStart") or ""),
+    "resetsAt": str(payload.get("nextResetTimestampUtc") or ""),
+  }]
+  return {"ready": True, "tierLabel": tier, "limits": limits}
+
+
+def collect(force: bool) -> dict[str, Any]:
+  db = cursor_state_db()
+  token = read_item(db, "cursorAuth/accessToken")
+  membership = read_item(db, "cursorAuth/stripeMembershipType")
+  probe_cache = cache_root() / "grokbot-limits.json"
+  cached = read_fresh_json(probe_cache, float("inf")) or {}
+  fallback = cached.get("record") if isinstance(cached.get("record"), dict) else None
+
+  if not token:
+    record = base_record(
+      usageStatusText="Waiting for auth",
+      authHelpText=AUTH_HELP,
+      tierLabel=membership.title() if membership else "",
+    )
+    if fallback:
+      record.update({k: fallback[k] for k in ("limits", "balance", "tierLabel") if k in fallback})
+      record["ready"] = True
+    return record
+
+  fetched_at = float(cached.get("fetchedAtMs") or 0) / 1000
+  if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+    record = base_record(ready=True)
+    record.update(fallback)
+    return record
+
+  usage = dashboard_post(USAGE_URL, token)
+  if not usage["ok"]:
+    record = base_record()
+    if fallback:
+      record.update({k: fallback[k] for k in ("limits", "balance", "tierLabel") if k in fallback})
+      record["ready"] = True
+    if usage.get("transport"):
+      record["retryAdvised"] = True
+    if usage.get("auth") or not fallback:
+      record["usageStatusText"] = "Grok Bot usage unavailable"
+      record["authHelpText"] = str(usage.get("helpText") or AUTH_HELP)
+    return record
+
+  parsed = parse_usage(usage.get("payload") or {})
+  if parsed.get("noIncluded"):
+    return base_record(
+      tierLabel=str(parsed.get("tierLabel") or ""),
+      usageStatusText="No included allowance",
+      authHelpText="Cursor plan has no included Grok Bot weekly allowance.",
+    )
+  if not parsed:
+    return base_record(usageStatusText="Grok Bot usage unavailable", authHelpText="Cursor returned no Grok Bot usage.")
+
+  snapshot = {"fetchedAtMs": round(time.time() * 1000), "record": parsed}
+  try:
+    write_json(probe_cache, snapshot)
+  except Exception as exc:
+    print(f"omarchy-agent-usage-grokbot: could not write cache ({exc})", file=sys.stderr)
+  record = base_record()
+  record.update(parsed)
+  return record
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser(description="Print the Grok Bot usage record as JSON")
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  parser.add_argument("--write", action="store_true")
+  args = parser.parse_args()
+
+  record = collect(force=args.force)
+  if not record.get("balance"):
+    record.pop("balance", None)
+  text = json.dumps(record, separators=(",", ":"), sort_keys=True)
+  if args.write:
+    write_json(usage_dir() / "grokbot.json", record)
+  print(text)
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())

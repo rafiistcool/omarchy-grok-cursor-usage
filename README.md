@@ -1,7 +1,7 @@
 # omarchy-grok-cursor-usage
 
 [Omarchy](https://omarchy.org/) bar widget for leftover AI coding quotas.
-One icon, one stacked popup: **Grok**, **Cursor**, and **Codex** (plus any
+One icon, one stacked popup: **Grok**, **Grok Bot**, **Cursor**, and **Codex** (plus any
 other collector that drops a usage record).
 
 Stock `omarchy.agents` already covers Claude / Codex / Fireworks as meters
@@ -34,7 +34,7 @@ Codex collector, leftover-vs-time charts, and CodexBar-style even-burn pace.
   - **Cycle**: first sample through reset.
   - Data stops at now. A dashed now-marker runs from 0% up to the current
     leftover. A red dashed even-burn line fades toward the future.
-- **Plan / auth** — SuperGrok / Ultra / Plus (whatever the collector
+- **Plan / auth** — SuperGrok / Grok Bot Plan / Ultra / Plus (whatever the collector
   reports). Sign-in hints when a CLI session is missing.
 
 ## Install
@@ -42,6 +42,7 @@ Codex collector, leftover-vs-time charts, and CodexBar-style even-burn pace.
 Needs Omarchy / Quickshell and Python 3.
 
 - **Grok** — `grok login` (reads `~/.grok/auth.json`, never stored here)
+- **Grok Bot** — signed-in Cursor app (`~/.config/Cursor/User/globalStorage`), uses Cursor's weekly Sand pool (separate from SuperGrok)
 - **Cursor** — signed-in Cursor app (`~/.config/Cursor/User/globalStorage`)
 - **Codex** — `codex login` (app-server RPC; this collector uses
   `-a never` because Codex CLI 0.149 rejected `-a untrusted`)
@@ -81,6 +82,7 @@ only scans `$OMARCHY_PATH/bin/`, so extra agents live as user collectors:
 | File | Role |
 |---|---|
 | `collectors/omarchy-agent-usage-grok` | SuperGrok weekly percent + plan name |
+| `collectors/omarchy-agent-usage-grokbot` | Grok Bot weekly Sand percent from Cursor session (separate from SuperGrok) |
 | `collectors/omarchy-agent-usage-cursor` | Ultra monthly Cursor / Other percents |
 | `collectors/omarchy-agent-usage-codex` | Codex weekly limit + local session stats |
 | `collectors/run-usage-update` | User collectors first, then packaged Claude / Fireworks |
