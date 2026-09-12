@@ -359,6 +359,15 @@ Item {
     onLoadFailed: root.applyHistory("antigravity", "")
   }
 
+  FileView {
+    path: root.historyDir + "/grokbot.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.applyHistory("grokbot", text())
+    onLoadFailed: root.applyHistory("grokbot", "")
+  }
+
   function historyScriptPath() {
     var url = Qt.resolvedUrl("history.py").toString()
     if (url.indexOf("file://") === 0) return decodeURIComponent(url.substring(7))

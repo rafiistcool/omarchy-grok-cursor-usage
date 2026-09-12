@@ -81,11 +81,10 @@ Without a file, the bar uses the generic agents glyph.
 
 ## 4. Remaining history (optional)
 
-`plugin/history.py` appends leftover samples for `grok`, `cursor`, and
-`codex` into `~/.local/state/omarchy/agents/history/<id>.json`. To chart
-another 7-day+ window, add its id to `AGENT_IDS` there and to the
-`FileView` / `remainingHistory` map in `plugin/Main.qml` and
-`plugin/Panel.qml`.
+`plugin/history.py` appends leftover samples for `grok`, `grokbot`, `cursor`,
+`codex`, and `antigravity` into `~/.local/state/omarchy/agents/history/<id>.json`.
+To chart another 7-day+ window, add its id to `AGENT_IDS` there and to the
+`FileView` / remaining-history map in `plugin/Main.qml` and `plugin/Panel.qml`.
 
 ## 5. Enable it
 

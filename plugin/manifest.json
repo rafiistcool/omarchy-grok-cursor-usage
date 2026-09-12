@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "omarchy-grok-cursor-usage contributors",
   "license": "MIT",
-  "description": "Grok, Cursor, and Codex leftover quotas on the Omarchy bar, with remaining-over-time charts and even-burn pace.",
+  "description": "Grok, Grok Bot, Cursor, and Codex leftover quotas on the Omarchy bar, with remaining-over-time charts and even-burn pace.",
   "kinds": [
     "bar-widget"
   ],
@@ -40,6 +40,9 @@
           "enabled": true
         },
         "antigravity": {
+          "enabled": true
+        },
+        "grokbot": {
           "enabled": true
         }
       },
