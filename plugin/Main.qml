@@ -152,7 +152,8 @@ Item {
   }
 
   function updateCommand(kind, agentIds) {
-    var command = [root.home + "/.config/omarchy/agents/run-usage-update"]
+    var url = Qt.resolvedUrl("../collectors/run-usage-update").toString()
+    var command = [decodeURIComponent(url.replace(/^file:\/\//, ""))]
     if (kind === "force") command.push("--force")
     if (kind === "limits") command.push("--limits-only")
     var providers = settings && settings.providers ? settings.providers : {}

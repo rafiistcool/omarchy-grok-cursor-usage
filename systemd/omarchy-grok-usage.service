@@ -5,7 +5,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.config/omarchy/agents/omarchy-grok-usage-watch
+ExecStart=%h/.config/omarchy/plugins/rafi.agents/collectors/omarchy-grok-usage-watch
 Restart=always
 RestartSec=5
 

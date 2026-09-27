@@ -8,8 +8,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "yourname.agents"
-  ipcTarget: "yourname.agents"
+  moduleName: "rafi.agents"
+  ipcTarget: "rafi.agents"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -19,7 +19,7 @@ Panel {
   readonly property color track: Style.selectedFillFor(foreground, Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   // Grok/Codex marks live in the omarchy icon font (U+E904/E905), not in the
-  // user's monospace/text face. Bind icons to "omarchy" like yourname.menu does.
+  // user's monospace/text face. Bind icons to "omarchy" like omarchy.menu does.
   readonly property string iconFontFamily: "omarchy"
 
   readonly property var providers: usage.enabledProviders
@@ -160,7 +160,7 @@ Panel {
   }
 
   function persistSettings(values) {
-    var id = root.moduleName || "yourname.agents"
+    var id = root.moduleName || "rafi.agents"
     var entry = { id: id }
     var current = root.settings || {}
     for (var existing in current)

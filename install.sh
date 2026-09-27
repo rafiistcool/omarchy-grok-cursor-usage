@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Install the agents panel plus Grok / Cursor / Codex collectors.
+# Compatibility installer: install a git-managed, self-contained plugin.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 USER_NAME="${USER:-$(id -un)}"
-PLACEHOLDER="yourname"
-PLUGIN_ID="${USER_NAME}.agents"
+PLUGIN_ID="rafi.agents"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/${PLUGIN_ID}"
-AGENTS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agents"
 SHELL_JSON="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.json"
 FORCE=0
 APPLY_LAYOUT=0
@@ -19,8 +17,8 @@ for arg in "$@"; do
     -h|--help)
       printf '%s\n' \
         "Usage: ./install.sh [--force] [--apply-layout]" \
-        "  --force          overwrite an existing <user>.agents plugin" \
-        "  --apply-layout   point bar.layout at <user>.agents (backs up shell.json)"
+        "  --force          back up and replace an existing rafi.agents plugin" \
+        "  --apply-layout   point bar.layout at rafi.agents (backs up shell.json)"
       exit 0
       ;;
     *)
@@ -32,32 +30,34 @@ done
 
 log() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
-if [[ -e $PLUGIN_DIR && $FORCE -eq 0 ]]; then
-  log "plugin exists, skipping: $PLUGIN_DIR (./install.sh --force to replace)"
+if [[ "$(realpath -m "$PLUGIN_DIR")" == "$ROOT" ]]; then
+  log "already running from the installed plugin"
+elif [[ -e $PLUGIN_DIR && $FORCE -eq 0 ]]; then
+  echo "Plugin exists: $PLUGIN_DIR. Use omarchy plugin update rafi.agents, or --force to back up and replace it." >&2
+  exit 1
 else
-  mkdir -p "$PLUGIN_DIR"
-  find "$ROOT/plugin" -type f | while read -r file; do
-    rel="${file#$ROOT/plugin/}"
-    mkdir -p "$PLUGIN_DIR/$(dirname "$rel")"
-    sed "s/${PLACEHOLDER}\./${USER_NAME}./g" "$file" > "$PLUGIN_DIR/$rel"
-  done
-  chmod +x "$PLUGIN_DIR/history.py"
-  python3 - "$PLUGIN_DIR/manifest.json" "$PLUGIN_ID" <<'PY'
-import json, sys
-path, plugin_id = sys.argv[1], sys.argv[2]
-data = json.load(open(path))
-data["id"] = plugin_id
-json.dump(data, open(path, "w"), indent=2, ensure_ascii=False)
-open(path, "a").write("\n")
-PY
-  log "installed plugin: $PLUGIN_DIR"
+  # Clone committed source so native plugin updates can fast-forward it.
+  if [[ -n $(git -C "$ROOT" status --porcelain) ]]; then
+    echo "Commit source changes before installing; the installer clones committed files." >&2
+    exit 1
+  fi
+  stage=$(mktemp -d)
+  trap 'rm -rf -- "$stage"' EXIT
+  git clone --quiet --no-hardlinks "$ROOT" "$stage/plugin"
+  origin=$(git -C "$ROOT" remote get-url origin)
+  git -C "$stage/plugin" remote set-url origin "$origin"
+  omarchy plugin validate "$stage/plugin"
+  mkdir -p "$(dirname "$PLUGIN_DIR")"
+  if [[ -e $PLUGIN_DIR ]]; then
+    backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/plugin-backups"
+    mkdir -p "$backup_root"
+    backup=$(mktemp -d "$backup_root/rafi.agents.XXXXXXXX")
+    mv -- "$PLUGIN_DIR" "$backup/plugin"
+    log "previous plugin backed up: $backup/plugin"
+  fi
+  mv -- "$stage/plugin" "$PLUGIN_DIR"
+  log "installed git-managed plugin: $PLUGIN_DIR"
 fi
-
-mkdir -p "$AGENTS_DIR"
-for name in omarchy-agent-usage-grok omarchy-agent-usage-cursor omarchy-agent-usage-codex omarchy-agent-usage-antigravity omarchy-agent-usage-grokbot run-usage-update omarchy-grok-usage-watch; do
-  install -m 0755 "$ROOT/collectors/$name" "$AGENTS_DIR/$name"
-done
-log "installed collectors: $AGENTS_DIR"
 
 if (( APPLY_LAYOUT )); then
   if [[ ! -f $SHELL_JSON ]]; then
@@ -66,7 +66,7 @@ if (( APPLY_LAYOUT )); then
     backup="$SHELL_JSON.bak.$(date +%s)"
     cp "$SHELL_JSON" "$backup"
     log "backed up shell.json -> $backup"
-    PLUGIN_ID="$PLUGIN_ID" python3 - "$SHELL_JSON" <<'PY'
+    PLUGIN_ID="$PLUGIN_ID" LEGACY_PLUGIN_ID="${USER_NAME}.agents" python3 - "$SHELL_JSON" <<'PY'
 import json, os, sys
 
 path = sys.argv[1]
@@ -84,7 +84,7 @@ for section in ("left", "center", "right"):
         if not isinstance(entry, dict):
             continue
         eid = str(entry.get("id") or "")
-        if eid in ("omarchy.agents", plugin_id) or eid.endswith(".agents"):
+        if eid in ("omarchy.agents", plugin_id, os.environ["LEGACY_PLUGIN_ID"]):
             if eid != plugin_id:
                 entry["id"] = plugin_id
                 changed = True
@@ -113,6 +113,6 @@ in ~/.config/omarchy/shell.json, or rerun:
 
 Then:
 
-  omarchy restart shell
+  omarchy shell shell rescanPlugins
 EOF
 fi

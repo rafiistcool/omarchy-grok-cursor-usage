@@ -39,7 +39,8 @@ Codex collector, leftover-vs-time charts, and CodexBar-style even-burn pace.
 
 ## Install
 
-Needs Omarchy / Quickshell and Python 3.
+Needs Omarchy with `omarchy plugin add`, Quickshell, Python 3, Bash, Git,
+`jq`, and GNU coreutils (`timeout`), as supplied by Omarchy.
 
 - **Grok** — `grok login` (reads `~/.grok/auth.json`, never stored here)
 - **Grok Bot** — signed-in Cursor app (weekly Sand allowance; same session as Cursor)
@@ -48,36 +49,47 @@ Needs Omarchy / Quickshell and Python 3.
   `-a never` because Codex CLI 0.149 rejected `-a untrusted`)
 
 ```bash
-git clone https://github.com/songlairui/omarchy-grok-cursor-usage.git
-cd omarchy-grok-cursor-usage
-./install.sh                 # plugin + collectors
-./install.sh --apply-layout  # also point the bar at $USER.agents
-omarchy restart shell
+omarchy plugin add https://github.com/rafiistcool/omarchy-grok-cursor-usage.git --enable
 ```
 
-`install.sh` never hard-codes an author username. The plugin is installed as
-`<your-user>.agents`. `--apply-layout` takes a timestamped backup of
-`~/.config/omarchy/shell.json` first.
+The plugin id is **`rafi.agents`** on every machine; it does not depend on
+your login name. Omarchy clones the entire repository, including collectors,
+into `~/.config/omarchy/plugins/rafi.agents/`. No separate setup script or
+background service is required. The widget refreshes automatically every
+15 minutes. Left-click the icon and press `r` to refresh manually.
 
-Refresh: left-click the icon, then `r`, or wait for the 15-minute timer.
+Update the widget and its collectors together:
 
-### Manual layout
-
-```json
-{
-  "id": "yourname.agents"
-}
+```bash
+omarchy plugin update rafi.agents
 ```
 
-Replace `yourname` with your login and put that object in `bar.layout.right`
-in `~/.config/omarchy/shell.json` (or change an existing `omarchy.agents`
-id to `$USER.agents`).
+### Migrate an older `install.sh` installation
+
+The old installer created a plain directory, so Omarchy cannot update it.
+From a clean checkout of this repository:
+
+```bash
+git pull --ff-only
+./install.sh --force --apply-layout
+omarchy shell shell rescanPlugins
+```
+
+This installs a Git checkout with the source repository's origin, backs up
+an existing `rafi.agents` directory under
+`~/.local/state/omarchy/plugin-backups/`, and backs up `shell.json` before
+replacing the old agents bar entry. Usage and history stay in place. If your
+old plugin used a different login prefix, its files are retained but its bar
+entry is switched to `rafi.agents`.
+
+For a fresh installation, prefer `omarchy plugin add` above. `install.sh`
+clones committed source only and refuses an uncommitted working tree.
 
 ## Collectors
 
 Omarchy's agents panel only **displays** JSON in
 `~/.local/state/omarchy/agents/usage/`. Packaged `omarchy-agent-usage-update`
-only scans `$OMARCHY_PATH/bin/`, so extra agents live as user collectors:
+only scans `$OMARCHY_PATH/bin/`, so this plugin runs its bundled collectors directly:
 
 | File | Role |
 |---|---|
@@ -85,8 +97,15 @@ only scans `$OMARCHY_PATH/bin/`, so extra agents live as user collectors:
 | `collectors/omarchy-agent-usage-grokbot` | Grok Bot weekly Sand allowance (Cursor session) |
 | `collectors/omarchy-agent-usage-cursor` | Ultra monthly Cursor / Other percents |
 | `collectors/omarchy-agent-usage-codex` | Codex weekly limit + local session stats |
-| `collectors/run-usage-update` | User collectors first, then packaged Claude / Fireworks |
+| `collectors/run-usage-update` | Bundled collectors, user additions, then packaged providers |
 | `plugin/history.py` | leftover time series (plateau-merged) |
+
+Bundled collectors take precedence over old copies in
+`~/.config/omarchy/agents/`; additional user collectors are still supported.
+Disabled providers and targeted retries are respected. Collectors run in
+parallel with a 90-second limit, and failed/invalid results leave the last
+valid snapshot intact. History is recorded after each update, including
+updates run outside the panel.
 
 No access tokens are stored in this repo. Collectors read logins already on
 the machine.
@@ -94,7 +113,8 @@ the machine.
 Optional: `collectors/omarchy-grok-usage-watch` plus
 `systemd/omarchy-grok-usage.service` refresh Grok/Cursor even if the panel
 timer is not running. The widget timer is enough for normal use; the unit is
-not enabled by `install.sh`.
+not enabled by `install.sh`. The sample unit uses the default config path;
+adjust `ExecStart` if you use a custom `XDG_CONFIG_HOME`.
 
 ## Adding an agent
 
@@ -112,30 +132,32 @@ charts only plot windows about 7 days or longer.
 |---|---|
 | `~/.local/state/omarchy/agents/usage/<id>.json` | latest snapshot (percents, plan, optional token totals) |
 | `~/.local/state/omarchy/agents/history/<id>.json` | leftover samples for the chart |
-| `~/.config/omarchy/agents/` | user collectors |
-| `~/.config/omarchy/plugins/$USER.agents/` | this widget |
+| `~/.config/omarchy/agents/` | optional additional user collectors |
+| `~/.config/omarchy/plugins/rafi.agents/` | Git checkout, widget, bundled collectors |
 
 Do not commit usage or history files. They can include spend rates.
 
 ## Developing
 
-**Edit `plugin/` in this repository, not the installed copy under
-`~/.config/omarchy/plugins/$USER.agents/`.** The two trees are related by
-`install.sh` only; nothing syncs them automatically.
+The repository root contains `manifest.json`; its entry point is
+`plugin/Panel.qml`. QML and assets live in `plugin/`, collectors in
+`collectors/`. Keep `rafi.agents` consistent in the manifest and panel.
 
 ```bash
-./install.sh --force      # copy plugin/ → ~/.config/omarchy/plugins/$USER.agents/
-omarchy restart shell     # reload Quickshell
-git push                  # after commit; others pull + reinstall
+python3 -m unittest discover -s tests -v
+omarchy plugin validate .
+# Commit changes, then install locally:
+./install.sh --force --apply-layout
+omarchy shell shell rescanPlugins
 ```
 
-Source files use the placeholder id `yourname.agents`; install rewrites it to
-your login. Full workflow, recovery if you edited the wrong tree, and why
-`omarchy plugin update` does not apply: **[plugin/README.md](plugin/README.md)**.
+The installed checkout and your development checkout are separate. Edit the
+development checkout, commit, then reinstall or push and use
+`omarchy plugin update rafi.agents`. See [plugin/README.md](plugin/README.md).
 
 ## Settings
 
-Top-level keys on the bar entry (`omarchy bar set $USER.agents …`):
+Top-level keys on the bar entry (`omarchy bar set rafi.agents …`):
 
 | Key | Default | What it does |
 |---|---|---|

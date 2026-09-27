@@ -476,22 +476,33 @@ def _cached_local_stats(max_age):
 
 def rpc_request(proc, request_id, method, params=None, timeout=8):
   payload = {"id": request_id, "method": method, "params": params or {}}
-  proc.stdin.write(json.dumps(payload) + "\n")
+  proc.stdin.write((json.dumps(payload) + "\n").encode())
   proc.stdin.flush()
-  deadline = time.time() + timeout
-  while time.time() < deadline:
-    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
-    if not ready:
+  deadline = time.monotonic() + timeout
+  # TextIOWrapper.readline() may block on partial lines or buffer the next
+  # response away from select(). Keep raw bytes across requests instead.
+  pending = getattr(proc, "_rpc_pending", b"")
+  while time.monotonic() < deadline:
+    if b"\n" not in pending:
+      ready, _, _ = select.select([proc.stdout], [], [], max(0, deadline - time.monotonic()))
+      if not ready:
+        break
+      chunk = os.read(proc.stdout.fileno(), 65536)
+      if not chunk:
+        raise RuntimeError("Codex app-server closed stdout during " + method)
+      pending += chunk
       continue
-    line = proc.stdout.readline()
-    if not line:
-      break
+    line, pending = pending.split(b"\n", 1)
+    proc._rpc_pending = pending
     try:
       message = json.loads(line)
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
       continue
-    if message.get("id") == request_id:
+    if isinstance(message, dict) and message.get("id") == request_id:
+      if message.get("error"):
+        raise RuntimeError("Codex RPC failed: " + method)
       return message
+  proc._rpc_pending = pending
   raise TimeoutError(method)
 
 
@@ -540,16 +551,18 @@ def fetch_codex_rpc():
   # `never`). The old `-a untrusted` makes app-server exit immediately;
   # the collector then times out on `initialize` and the panel shows that
   # method name as if the CLI were not logged in.
+  stderr_log = tempfile.TemporaryFile()
   try:
     proc = subprocess.Popen(
       [codex, "-s", "read-only", "-a", "never", "app-server"],
       stdin=subprocess.PIPE,
       stdout=subprocess.PIPE,
-      stderr=subprocess.PIPE,
-      text=True,
+      stderr=stderr_log,
+      bufsize=0,
       env=ENV,
     )
   except Exception as exc:
+    stderr_log.close()
     result["usageStatusText"] = "Codex unavailable"
     result["authHelpText"] = str(exc)
     return result
@@ -558,9 +571,10 @@ def fetch_codex_rpc():
   try:
     rpc_request(proc, 1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=8)
     if proc.poll() is not None:
-      stderr_tail = (proc.stderr.read() or "").strip()[:240]
+      stderr_log.seek(0)
+      stderr_tail = stderr_log.read(240).decode("utf-8", errors="replace").strip()
       raise RuntimeError(stderr_tail or f"app-server exited {proc.returncode}")
-    proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
+    proc.stdin.write((json.dumps({"method": "initialized", "params": {}}) + "\n").encode())
     proc.stdin.flush()
     account_msg = rpc_request(proc, 2, "account/read", timeout=4)
     limits_msg = rpc_request(proc, 3, "account/rateLimits/read", timeout=4)
@@ -578,11 +592,10 @@ def fetch_codex_rpc():
       result["authHelpText"] = ""
       result["usageStatusText"] = ""
   except Exception as exc:
-    if not stderr_tail and proc.stderr:
-      try:
-        stderr_tail = (proc.stderr.read() or "").strip()[:240]
-      except Exception:
-        stderr_tail = ""
+    # A regular temporary file cannot wait forever for a still-running
+    # app-server to close stderr, unlike PIPE.read().
+    stderr_log.seek(0)
+    stderr_tail = stderr_log.read(240).decode("utf-8", errors="replace").strip()
     result["usageStatusText"] = "Codex limits unavailable"
     result["authHelpText"] = stderr_tail or str(exc)
   finally:
@@ -592,8 +605,12 @@ def fetch_codex_rpc():
     except Exception:
       try:
         proc.kill()
+        proc.wait(timeout=1)
       except Exception:
         pass
+    proc.stdin.close()
+    proc.stdout.close()
+    stderr_log.close()
   return result
 
 

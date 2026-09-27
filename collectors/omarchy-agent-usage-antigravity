@@ -325,7 +325,8 @@ def main() -> int:
   if args.write:
     write_json(usage_dir() / f"{AGENT_ID}.json", record)
   print(payload)
-  return 0 if record.get("ready") else 1
+  # An unavailable app is a valid status record, not a collector failure.
+  return 0
 
 
 if __name__ == "__main__":

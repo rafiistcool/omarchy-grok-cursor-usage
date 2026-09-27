@@ -16,7 +16,10 @@ Name it `omarchy-agent-usage-<id>` (`<id>` is the record `id`, for example
 | `--write` | also write the record to the usage directory |
 
 Install it executable at `~/.config/omarchy/agents/omarchy-agent-usage-<id>`.
-`run-usage-update` prefers that directory over packaged collectors.
+`collectors/run-usage-update` discovers additions there before packaged
+collectors. Bundled collectors win over user copies with the same id, so
+legacy copies cannot shadow updated code. Give the executable a valid shebang;
+the runner executes it directly and allows 90 seconds per collector.
 
 ## 2. Record contract
 
@@ -92,11 +95,11 @@ The collector is picked up on the next panel refresh (`r`, or the 15-minute
 timer). To hide one:
 
 ```bash
-omarchy bar set yourname.agents providers '{
+omarchy bar set rafi.agents providers '{
   "grok": { "enabled": true },
   "cursor": { "enabled": true },
   "codex": { "enabled": false }
 }' --json
 ```
 
-Use the plugin id `install.sh` created (`$USER.agents`).
+The plugin id is always `rafi.agents`. Disabled providers are not polled.

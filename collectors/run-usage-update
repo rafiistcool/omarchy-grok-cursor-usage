@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# User-local wrapper around omarchy-agent-usage-update.
-# Runs collectors from ~/.config/omarchy/agents first so they override the
-# packaged ones (Codex 0.149 broke `-a untrusted` in the stock collector).
+# Run bundled collectors, user additions, then remaining packaged collectors.
 set -euo pipefail
 
 USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
-USER_DIR="$HOME/.config/omarchy/agents"
+BUNDLED_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agents"
 PACKAGED="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-agent-usage-update"
 
 mkdir -p "$USAGE_DIR"
@@ -13,17 +12,43 @@ mkdir -p "$USAGE_DIR"
 except=()
 status=0
 user_flags=()
-for arg in "$@"; do
-  case "$arg" in
-    --force|--limits-only) user_flags+=("$arg") ;;
+original_args=("$@")
+only=()
+declare -A excluded=() seen=()
+while (( $# )); do
+  case "$1" in
+    --force|--limits-only) user_flags+=("$1") ;;
+    --except)
+      if (( $# < 2 )) || [[ -z $2 || $2 == -* ]]; then
+        echo "run-usage-update: --except requires an agent id" >&2
+        exit 2
+      fi
+      excluded["$2"]=1
+      shift ;;
+    -*) echo "run-usage-update: unknown option: $1" >&2; exit 2 ;;
+    *) only+=("$1") ;;
   esac
+  shift
 done
+
+wanted() {
+  local agent="$1" candidate
+  [[ -z ${excluded[$agent]:-} ]] || return 1
+  (( ${#only[@]} )) || return 0
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
 
 collect_stdout() {
   local collector="$1" agent="$2"
   shift 2
   local record tmp
-  if ! record=$(python3 "$collector" "$@") || [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+  # Bound the entire collector, including its subprocesses. A stuck provider
+  # must not freeze the panel's refresh state or starve the other providers.
+  if ! record=$(timeout --kill-after=2s 90s "$collector" "$@") ||
+      ! jq -e --arg id "$agent" 'type == "object" and .id == $id and .schemaVersion == 1' >/dev/null 2>&1 <<<"$record"; then
     echo "run-usage-update: $agent collector failed" >&2
     return 1
   fi
@@ -33,16 +58,28 @@ collect_stdout() {
 }
 
 shopt -s nullglob
-for collector in "$USER_DIR"/omarchy-agent-usage-*; do
-  [[ -x $collector || -f $collector ]] || continue
+pids=()
+for collector in "$BUNDLED_DIR"/omarchy-agent-usage-* "$USER_DIR"/omarchy-agent-usage-*; do
+  [[ -x $collector && -f $collector ]] || continue
   agent="${collector##*/omarchy-agent-usage-}"
   [[ $agent == "update" ]] && continue
+  [[ -z ${seen[$agent]:-} ]] || continue
+  seen[$agent]=1
   except+=(--except "$agent")
-  collect_stdout "$collector" "$agent" "${user_flags[@]}" || status=1
+  wanted "$agent" || continue
+  collect_stdout "$collector" "$agent" "${user_flags[@]}" &
+  pids+=("$!")
 done
 
 if [[ -x $PACKAGED ]]; then
-  "$PACKAGED" "${except[@]}" "$@" || status=1
+  timeout --kill-after=2s 90s "$PACKAGED" "${except[@]}" "${original_args[@]}" &
+  pids+=("$!")
 fi
 
+for pid in "${pids[@]}"; do
+  wait "$pid" || status=1
+done
+
+# Also works without the panel (for example from a user timer).
+python3 "$BUNDLED_DIR/../plugin/history.py" || status=1
 exit "$status"
