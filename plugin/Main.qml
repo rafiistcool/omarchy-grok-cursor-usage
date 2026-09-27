@@ -90,12 +90,18 @@ Item {
   // Only the advising agents rerun, so an outage at one provider does not
   // put every other collector on a 30-second treadmill.
   property var retryAgentIds: []
+  property int retryAttempt: 0
+  readonly property int retryDelayMs: Math.min(900000, refreshIntervalSec * 1000, 30000 * Math.pow(2, Math.min(retryAttempt, 5)))
 
   Timer {
     id: limitsRetry
-    interval: 30000
+    interval: root.retryDelayMs
     repeat: false
-    onTriggered: root.runUpdate("limits", root.retryAgentIds)
+    onTriggered: {
+      if (updateProcess.running) { restart(); return }
+      root.retryAttempt++
+      root.runUpdate("limits", root.retryAgentIds)
+    }
   }
 
   function scheduleLimitsRetry() {
@@ -106,8 +112,12 @@ Item {
         advising.push(String(record.id))
     }
     retryAgentIds = advising
-    if (advising.length > 0) limitsRetry.restart()
-    else limitsRetry.stop()
+    if (advising.length > 0) {
+      if (!limitsRetry.running) limitsRetry.start()
+    } else {
+      limitsRetry.stop()
+      retryAttempt = 0
+    }
   }
 
   Component.onCompleted: {
@@ -396,7 +406,8 @@ Item {
     } catch (e) {
       parsed = null
     }
-    var next = { grok: remainingHistory.grok, cursor: remainingHistory.cursor, codex: remainingHistory.codex }
+    var next = {}
+    for (var key in remainingHistory) next[key] = remainingHistory[key]
     try {
       if (JSON.stringify(next[id]) === JSON.stringify(parsed)) return
     } catch (e2) {}

@@ -143,11 +143,11 @@ Panel {
   readonly property real openPanelIndicatorWidth: vertical ? 0 : remainingMeterLength
   readonly property real openPanelIndicatorHeight: vertical ? remainingMeterLength : 0
 
-  property var grokRemaining: null
-  property var grokbotRemaining: null
-  property var cursorRemaining: null
-  property var codexRemaining: null
-  property var antigravityRemaining: null
+  readonly property var grokRemaining: usage.remainingHistory.grok || null
+  readonly property var grokbotRemaining: usage.remainingHistory.grokbot || null
+  readonly property var cursorRemaining: usage.remainingHistory.cursor || null
+  readonly property var codexRemaining: usage.remainingHistory.codex || null
+  readonly property var antigravityRemaining: usage.remainingHistory.antigravity || null
   readonly property string agentsHistoryDir: (Quickshell.env("XDG_STATE_HOME") || ((Quickshell.env("HOME") || "") + "/.local/state")) + "/omarchy/agents/history"
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -1070,61 +1070,10 @@ Panel {
     settings: root.settings
   }
 
-  FileView {
-    path: root.agentsHistoryDir + "/grok.json"
-    watchChanges: true
-    printErrors: false
-    Component.onCompleted: reload()
-    onFileChanged: reload()
-    onLoaded: root.grokRemaining = root.parseHistory(text())
-    onLoadFailed: root.grokRemaining = null
-  }
-
-  FileView {
-    path: root.agentsHistoryDir + "/cursor.json"
-    watchChanges: true
-    printErrors: false
-    Component.onCompleted: reload()
-    onFileChanged: reload()
-    onLoaded: root.cursorRemaining = root.parseHistory(text())
-    onLoadFailed: root.cursorRemaining = null
-  }
-
-  FileView {
-    path: root.agentsHistoryDir + "/codex.json"
-    watchChanges: true
-    printErrors: false
-    Component.onCompleted: reload()
-    onFileChanged: reload()
-    onLoaded: root.codexRemaining = root.parseHistory(text())
-    onLoadFailed: root.codexRemaining = null
-  }
-
-  FileView {
-    path: root.agentsHistoryDir + "/antigravity.json"
-    watchChanges: true
-    printErrors: false
-    Component.onCompleted: reload()
-    onFileChanged: reload()
-    onLoaded: root.antigravityRemaining = root.parseHistory(text())
-    onLoadFailed: root.antigravityRemaining = null
-  }
-
-  FileView {
-    path: root.agentsHistoryDir + "/grokbot.json"
-    watchChanges: true
-    printErrors: false
-    Component.onCompleted: reload()
-    onFileChanged: reload()
-    onLoaded: root.grokbotRemaining = root.parseHistory(text())
-    onLoadFailed: root.grokbotRemaining = null
-  }
-
-  // Cheap enough to keep running: it only re-evaluates text bindings, and a
-  // stale "resets in 2h" on a panel that is open is worse than a timer.
+  // Countdown and chart geometry only need a clock while the panel is visible.
   Timer {
     interval: 30000
-    running: true
+    running: root.opened
     repeat: true
     onTriggered: root.nowMs = Date.now()
   }
@@ -1832,7 +1781,8 @@ Panel {
       readonly property real plotRight: 8
       readonly property real plotTop: 10
       readonly property real plotBottom: 10
-      readonly property var plotLayout: root.remainingPlotLayout(chart.series, width, height, root.nowMs, root.remainingAxis)
+      readonly property var plotLayout: root.opened
+        ? root.remainingPlotLayout(chart.series, width, height, root.nowMs, root.remainingAxis) : ({})
       readonly property var hoverBounds: root.remainingBounds(chart.series, root.nowMs, root.remainingAxis)
       readonly property bool hoverActive: chartHover.containsMouse
         && chartHover.mouseX >= plotLeft && chartHover.mouseX <= width - plotRight

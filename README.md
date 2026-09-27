@@ -58,6 +58,12 @@ into `~/.config/omarchy/plugins/rafi.agents/`. No separate setup script or
 background service is required. The widget refreshes automatically every
 15 minutes. Left-click the icon and press `r` to refresh manually.
 
+To keep idle CPU usage low, countdowns and chart geometry pause while the popup
+is closed. History files are watched and parsed once, shared by the bar and panel.
+Failed quota requests retry after 30 seconds, then back off exponentially up to
+the configured refresh interval (at most 15 minutes). Normal collection still
+runs every 15 minutes by default; file changes update the display immediately.
+
 Update the widget and its collectors together:
 
 ```bash
