@@ -15,7 +15,7 @@ class ServiceTests(unittest.TestCase):
             root = Path(temp)
             for name in ('plugin','collectors','runtime','state/omarchy/agents/usage'):
                 (root/name).mkdir(parents=True,mode=0o700)
-            for name in ('Main.qml','Agent.qml'):
+            for name in ('Main.qml','Agent.qml','UsageService.qml','qmldir'):
                 shutil.copy2(ROOT/'plugin'/name,root/'plugin'/name)
             (root/'plugin/history.py').write_text('pass\n')
             collector=root/'collectors/run-usage-update'
@@ -24,10 +24,12 @@ class ServiceTests(unittest.TestCase):
 import Quickshell
 import "plugin" as Agents
 ShellRoot {
-  Agents.Main { id: service }
+  property var service: Agents.UsageService
+  property var otherMonitor: Agents.UsageService
   Timer {
     interval: 300; running: true
     onTriggered: {
+      if (service !== otherMonitor) { console.log("DUPLICATE_BACKEND"); Qt.quit(); return }
       service.applyHistory("antigravity", '{"series":[{"title":"Keep me"}]}')
       service.applyHistory("grokbot", '{"series":[]}')
       service.applyHistory("grok", '{"series":[]}')

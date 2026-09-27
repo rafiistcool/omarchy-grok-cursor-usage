@@ -1065,10 +1065,9 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  Main {
-    id: usage
-    settings: root.settings
-  }
+  readonly property var usage: UsageService
+  Component.onCompleted: usage.settings = root.settings
+  onSettingsChanged: usage.settings = root.settings
 
   // Countdown and chart geometry only need a clock while the panel is visible.
   Timer {

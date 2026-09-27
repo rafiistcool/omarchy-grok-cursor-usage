@@ -186,3 +186,6 @@ Top-level keys on the bar entry (`omarchy bar set rafi.agents …`):
 
 MIT. `plugin/Main.qml` and `plugin/Agent.qml` started from Omarchy's agents
 widget (MIT).
+
+The backend is shared across monitor bars: multiple displays do not start
+extra collectors, file watchers, or VPN listeners.
