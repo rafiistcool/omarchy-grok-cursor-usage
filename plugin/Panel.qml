@@ -962,7 +962,7 @@ Panel {
     return dayName(date)
   }
 
-  function dayTooltip(day, today) {
+  function dayTooltip(day, today, p) {
     if (!day) return ""
     var parsed = new Date(String(day.date) + "T00:00:00")
     var label = isNaN(parsed.getTime())
@@ -972,9 +972,9 @@ Panel {
     // Prompt and session counts only exist for today, so they ride along here
     // instead of taking a section of their own. Billing-API agents never
     // count prompts, and "0 prompts" would read as a quiet day, not a gap.
-    if (today && provider && provider.hasPromptStats !== false)
-      text += " · " + Number(provider.todayPrompts || 0) + " prompts · "
-        + Number(provider.todaySessions || 0) + " sessions"
+    if (today && p && p.hasPromptStats !== false)
+      text += " · " + Number(p.todayPrompts || 0) + " prompts · "
+        + Number(p.todaySessions || 0) + " sessions"
     return text
   }
 
@@ -1353,6 +1353,7 @@ Panel {
     property bool showChartHeader: false
 
     readonly property var windows: root.limitWindows(block.provider)
+    readonly property var models: root.modelRows(block.provider)
     spacing: Style.space(10)
 
     PanelSeparator {
@@ -1436,6 +1437,70 @@ Panel {
       width: parent.width
       series: root.remainingSeriesFor(block.provider)
       showHeader: block.showChartHeader
+    }
+
+    PanelSeparator {
+      visible: usageSection.visible
+      width: parent.width
+      foreground: root.foreground
+    }
+
+    Column {
+      id: usageSection
+      readonly property var days: block.provider ? (block.provider.recentDays || []) : []
+      readonly property real peak: Math.max(1, root.weekPeak(block.provider))
+      visible: days.length > 0
+      width: parent.width
+      spacing: Style.spacing.md
+
+      PanelSectionHeader {
+        width: parent.width
+        text: "TOKENS BY DAY"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+
+      Repeater {
+        model: usageSection.days
+        DayRow {
+          required property var modelData
+          width: usageSection.width
+          provider: block.provider
+          day: modelData
+          ratio: Number(modelData.messageCount || 0) / usageSection.peak
+          today: String(modelData.date || "") === root.todayDate()
+        }
+      }
+    }
+
+    PanelSeparator {
+      visible: modelSection.visible
+      width: parent.width
+      foreground: root.foreground
+    }
+
+    Column {
+      id: modelSection
+      visible: block.models.length > 0
+      width: parent.width
+      spacing: Style.spacing.md
+
+      PanelSectionHeader {
+        width: parent.width
+        text: "TOKENS BY MODEL"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+      }
+
+      Repeater {
+        model: block.models
+        ModelRow {
+          required property var modelData
+          width: modelSection.width
+          row: modelData
+          share: modelData.total / Math.max(1, block.models[0].total)
+        }
+      }
     }
   }
 
@@ -1596,6 +1661,7 @@ Panel {
   // foreground so the week reads as a run-up to right now.
   component DayRow: Item {
     id: dayRow
+    property var provider: null
     property var day: null
     property real ratio: 0
     property bool today: false
@@ -1661,7 +1727,7 @@ Panel {
 
     PanelToolTip {
       visible: dayHover.containsMouse
-      text: root.dayTooltip(dayRow.day, dayRow.today)
+      text: root.dayTooltip(dayRow.day, dayRow.today, dayRow.provider)
       fontFamily: root.fontFamily
     }
   }

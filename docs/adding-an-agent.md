@@ -73,9 +73,17 @@ Field notes:
 - `authHelpText` — shown when the user needs to sign in. Leave empty when
   `ready` is true.
 - `balance` — optional prepaid ledger `{ remaining, funded, spent, currency, estimated }`.
+- `recentDays` — recent seven-day token history as `{ date: "YYYY-MM-DD", messageCount: <tokens> }`.
+  Despite its name, `messageCount` holds the day's token total.
+- `modelUsage` — model ids mapped to recorded-history totals:
+  `{ inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }`.
+  The panel shows the top four models by the sum of these fields. Count cached
+  tokens separately from uncached input and include reasoning in output only
+  once. These totals are not limited to the current quota cycle.
+- Leave `recentDays` empty and `modelUsage` as `{}` when token data is unavailable.
+  Set `hasPromptStats: false` when prompt/session counts are unavailable.
 
-Do not put tokens, emails, or cookie values in the record. Percents and
-plan names are enough.
+Do not put authentication tokens, emails, or cookie values in the record.
 
 ## 3. Optional mark
 

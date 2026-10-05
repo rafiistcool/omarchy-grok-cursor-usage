@@ -236,6 +236,17 @@ Item {
   // All-time keeps a quiet day from hiding an agent; today's counts admit a
   // machine whose only source is history.jsonl, which knows nothing older.
   function providerHasData(p) {
+    if (numberValue(p.todayTotalTokens) > 0) return true
+    var days = p.recentDays || []
+    for (var i = 0; i < days.length; i++)
+      if (numberValue(days[i].messageCount) > 0) return true
+    var models = p.modelUsage || {}
+    for (var id in models) {
+      var bucket = models[id] || {}
+      if (numberValue(bucket.inputTokens) > 0 || numberValue(bucket.outputTokens) > 0
+          || numberValue(bucket.cacheReadInputTokens) > 0 || numberValue(bucket.cacheCreationInputTokens) > 0)
+        return true
+    }
     return numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
       || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
       || numberValue(p.todaySessions) > 0 || (p.limits && p.limits.length > 0)

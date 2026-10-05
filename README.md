@@ -36,6 +36,12 @@ Codex collector, leftover-vs-time charts, and CodexBar-style even-burn pace.
     leftover. A red dashed even-burn line fades toward the future.
 - **Plan / auth** — SuperGrok / Ultra / Plus (whatever the collector
   reports). Sign-in hints when a CLI session is missing.
+- **Token tables** — beneath each provider's quota chart, daily totals for
+  the collector's recent seven-day history and the top four models by tokens.
+  Today's row is highlighted; hover for prompt/session counts or a model's
+  input, output, cache-read, and cache-write breakdown. Model totals cover all
+  recorded history, not just the current quota cycle. Tables appear only when
+  the collector supplies data; quota-only providers do not show token tables.
 
 ## Install
 
