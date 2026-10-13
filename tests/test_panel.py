@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,6 +144,135 @@ ShellRoot {
             self.assertEqual(result.returncode, 0, output)
             self.assertIn('AGENTS_TABLES_PASS', output)
             self.assertNotIn('AGENTS_TABLES_FAIL', output)
+
+    def test_accounts_switching_and_plain_text(self):
+        with tempfile.TemporaryDirectory(prefix='agents-accounts-') as temp:
+            root = Path(temp)
+            shutil.copytree(ROOT / 'plugin', root / 'plugin')
+            (root / 'plugin/history.py').write_text('pass\n')
+            for name in ('Commons', 'Ui', 'services'):
+                (root / name).symlink_to(SHELL / name, target_is_directory=True)
+            for name in ('collectors', 'runtime', 'home', 'bin', 'state/omarchy/agents/usage'):
+                (root / name).mkdir(parents=True, mode=0o700)
+            # Every account helper is a fake that only records its arguments;
+            # the isolated HOME and state keep a real one harmless regardless.
+            log = root / 'helpers.log'
+            log.write_text('')
+            for name in ('run-usage-update', 'omarchy-agent-account-add', 'omarchy-agent-account-use',
+                         'omarchy-agent-account-mode', 'omarchy-agent-account-rename'):
+                helper = root / ('collectors' if name == 'run-usage-update' else 'bin') / name
+                helper.write_text('#!/bin/sh\necho "' + name + ' $*" >> "$AGENTS_HELPER_LOG"\n')
+                helper.chmod(0o755)
+            (root / 'shell.qml').write_text('''import QtQuick
+import Quickshell
+import "plugin" as Agents
+ShellRoot {
+  Agents.Panel { id: panel }
+  function check(ok, message) { if (!ok) throw new Error(message) }
+  function allItems(item, seen) {
+    if (!item || seen.indexOf(item) >= 0) return seen
+    seen.push(item)
+    var lists = [item.data, item.children, item.contentItem]
+    for (var i=0;i<lists.length;i++) {
+      var list = lists[i]
+      if (!list) continue
+      if (list.length !== undefined) {
+        for (var j=0;j<list.length;j++) allItems(list[j],seen)
+      } else allItems(list,seen)
+    }
+    return seen
+  }
+  function kinds(row) { return row.map(function(target) { return target.kind + target.index }).join(",") }
+  Timer {
+    interval: 400; running: true
+    onTriggered: {
+      try {
+        var service = Agents.UsageService
+        service.accountTools = true
+        var soon = new Date(Date.now() + 3600000).toISOString()
+        var past = new Date(Date.now() - 3600000).toISOString()
+        var limits = [{label:"Session (5-hour)",percent:.85,resetsAt:soon},{label:"Old",title:"<s>Expired</s>",percent:.99,resetsAt:past}]
+        var claude = {id:"claude", name:"Claude <b>Code</b>", ready:true, tierLabel:"<u>Max</u>", limits:limits,
+          accountSwitch:{mode:"manual",threshold:95}, accounts:[
+            {id:"main",label:"Main",email:"me@example.invalid",plan:"Max 20x",active:true,primary:true,limits:limits},
+            {id:"work",label:"<img src=x>Work",plan:"<i>Pro</i>",active:false,limits:[{label:"Weekly (7-day)",percent:.2,resetsAt:soon}],stale:true,fetchedAt:1},
+            {id:"side",label:"Side",active:false,limits:[],usageStatusText:"Waiting for auth",authHelpText:"<b>help</b>"}]}
+        var grok = {id:"grok", name:"Grok", usageStatusText:"Sign-in expired", authHelpText:"Run <b>grok login</b>.",
+          limits:[{title:"Weekly",percent:.4,resetsAt:soon}]}
+        var cursor = {id:"cursor", name:"Cursor", usageStatusText:"Waiting for auth", authHelpText:"Sign in to the <b>Cursor</b> app.",
+          limits:[{title:"Monthly",percent:.5,resetsAt:soon}]}
+        service.agents = [{record:claude},{record:grok},{record:cursor}]
+        check(service.enabledProviders.map(function(p) { return p.providerId }).join() === "grok,cursor,claude", "default order")
+        check(service.nearLimit, "several accounts near the switch threshold refresh sooner")
+        Qt.callLater(function() {
+          try {
+            var byId = {}
+            panel.providers.forEach(function(p) { byId[p.providerId] = p })
+            check(panel.accountEntries.length === 3, "accounts listed across providers")
+            check(panel.signInOffered(byId.grok) && !panel.signInOffered(byId.cursor), "sign-in offered only where it can be done")
+            check(panel.providerNotice(byId.grok) === "" && panel.providerNotice(byId.cursor).indexOf("Cursor") >= 0, "other agents keep their help line")
+            var rows = panel.keyRows.map(kinds)
+            check(rows.join("|") === "add0,launch0|provider0|providerSignin0|provider1|provider2|autoswitch1,account1|signin2,autoswitch2,account2|starter0,starter1,starter2",
+              "cursor stops: " + rows.join("|"))
+            var expired = panel.limitWindows(byId.claude)[1]
+            check(expired.percent === 0 && expired.resetAt === "", "a window past its reset reads empty")
+            var unknown = {title:"Odd", percent:.2, resetAt:soon, startsAt:""}
+            check(panel.paceRemaining(unknown) === -1 && panel.paceCaption(unknown) === "", "no pace without a window start")
+            check(panel.inferredWindowSpanMs({title:"Fable Weekly"}) === 7 * 24 * 3600 * 1000, "a model-scoped window shares its clock")
+
+            panel.pointAt("account", 0)
+            check(!panel.pickedEntry, "the active account is not a stop")
+            panel.pointAt("account", 1)
+            check(panel.pickedEntry.account.id === "work" && panel.isPicked(byId.claude, byId.claude.accounts[1]), "picked account")
+            panel.activateSelection()
+            panel.toggleSwitchMode()
+            panel.renameAccount(byId.claude, byId.claude.accounts[1], "Day job")
+
+            var items = allItems(panel, [])
+            check(items.filter(function(item) { return "pickedKind" in item }).length === 3, "one header per account")
+            check(items.filter(function(item) { return "leftover" in item && "stale" in item && item.stale }).length === 1, "stale account limits marked")
+            var markup = items.filter(function(item) { return typeof item.text === "string" && "textFormat" in item && /<\\w/.test(item.text) })
+            check(markup.length >= 6, "markup-shaped strings reach the page: " + markup.length)
+            var rich = markup.filter(function(item) { return item.textFormat !== Text.PlainText })
+            check(rich.length === 0, "collector text stays plain: " + JSON.stringify(rich.map(function(item) { return item.text })))
+
+            // A release without `omarchy agent account` offers none of it.
+            service.accountTools = false
+            check(!panel.addButtonShown && !panel.signInOffered(byId.grok), "account controls need the account tools")
+            check(panel.providerNotice(byId.grok).indexOf("grok login") >= 0, "the help line stands in for the link")
+            check(panel.keyRows.map(kinds).join("|").indexOf("add0") < 0 && panel.keyRows.map(kinds).join("|").indexOf("providerSignin") < 0, "no stops for missing controls")
+            panel.addAccount()
+            check(panel.addStage === "", "adding needs the account tools")
+            console.log("AGENTS_ACCOUNTS_PASS")
+          } catch (error) { console.log("AGENTS_ACCOUNTS_FAIL", error) }
+          Qt.quit()
+        })
+      } catch (error) { console.log("AGENTS_ACCOUNTS_FAIL", error); Qt.quit() }
+    }
+  }
+}
+''')
+            display = Path(os.environ['WAYLAND_DISPLAY'])
+            if not display.is_absolute():
+                display = Path(os.environ['XDG_RUNTIME_DIR']) / display
+            env = dict(os.environ, QT_QPA_PLATFORM='wayland', WAYLAND_DISPLAY=str(display),
+                       HOME=str(root / 'home'), XDG_CONFIG_HOME=str(root / 'home/.config'),
+                       XDG_RUNTIME_DIR=str(root / 'runtime'), XDG_STATE_HOME=str(root / 'state'),
+                       AGENTS_HELPER_LOG=str(log), PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'])
+            result = subprocess.run(['qs', '-p', str(root), '--no-color'], env=env,
+                                    capture_output=True, text=True, timeout=10)
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            self.assertIn('AGENTS_ACCOUNTS_PASS', output)
+            self.assertNotIn('AGENTS_ACCOUNTS_FAIL', output)
+            # The helpers are started detached, so they may land after the shell quits.
+            expected = ['omarchy-agent-account-use claude work', 'omarchy-agent-account-mode claude auto',
+                        'run-usage-update --limits-only claude', 'omarchy-agent-account-rename claude work Day job']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not all(line in log.read_text() for line in expected):
+                time.sleep(.05)
+            for line in expected:
+                self.assertIn(line, log.read_text())
 
 
 if __name__ == '__main__':

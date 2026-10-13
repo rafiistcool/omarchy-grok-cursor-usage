@@ -25,9 +25,11 @@ Quota chart examples for Grok and Cursor:
   styles: vertical meter, percent). Uses Grok's weekly quota when available,
   otherwise the selected provider's available window.
 - **Stacked popup** — every enabled provider with quotas, balances, or recorded
-  activity, including providers with token data alone. Grok, Grok Bot, and
-  Cursor come first, followed by the other providers. Scroll or use the arrow
-  keys when the content exceeds the screen height.
+  activity, including providers with token data alone, under a hero whose line
+  rotates through the token totals across all of them. Grok, Grok Bot, and
+  Cursor come first until you reorder the page: drag a provider by its mark,
+  or move the one under the cursor with Ctrl+Up/Down. The order is kept in
+  `~/.local/state/omarchy/agents/order.json`.
 - **Countdown meters** — fill is remaining, not spent. A red tick is
   even-burn remaining (elapsed fraction of the quota window). Caption is
   reserve / deficit / on pace.
@@ -44,7 +46,16 @@ Quota chart examples for Grok and Cursor:
   - Data stops at now. A dashed now-marker runs from 0% up to the current
     leftover. A red dashed even-burn line fades toward the future.
 - **Plan / auth** — SuperGrok / Ultra / Plus (whatever the collector
-  reports). Sign-in hints when a CLI session is missing.
+  reports). Sign-in hints when a CLI session is missing; for Claude, Codex,
+  and Grok a _Sign-in required_ link signs in again from the popup.
+- **Accounts** — a provider with more than one subscription account (see
+  `omarchy agent account`) lists each with its own countdown meters. _ACTIVE_
+  marks the one new sessions start as; the others offer _Use_, and
+  _Autoswitch_ to move over automatically near a limit. Click a name to rename
+  the account. The `+` in the hero adds a subscription, `>_` starts the
+  default agent, and the starter tiles hand it a first task. These controls
+  need an Omarchy release that ships `omarchy agent account`; on an older one
+  they are left out and the rest of the popup works as before.
 - **Token tables** — beneath each provider's quota chart, daily totals for
   the collector's recent seven-day history and the top four models by tokens.
   Today's row is highlighted; hover for prompt/session counts or a model's
@@ -65,14 +76,16 @@ Quota chart examples for Grok and Cursor:
 | Grok | SuperGrok weekly pool and plan | Not collected |
 | Grok Bot | Weekly Sand allowance through the Cursor session | Not collected |
 | Cursor | Monthly Cursor-model and other-model pools | Not collected |
-| Codex | Rate-limit windows and plan through app-server RPC | Local Codex, pi/omp, and OpenCode history |
+| Codex | Rate-limit windows, plan, and free reset credits through app-server RPC, per account when several are registered | Local Codex, pi/omp, and OpenCode history |
 | Antigravity | Gemini and third-party model windows from the running app | Not collected |
 | Claude | Packaged Omarchy collector | Whatever the packaged collector supplies |
 | Fireworks | Packaged Omarchy collector, including estimated balance | Whatever the packaged collector supplies |
 
 Codex reads native `sessions` and `archived_sessions` under `CODEX_HOME`
 (default `~/.codex`), pi/omp sessions using `openai-codex`, and OpenCode's
-OpenAI-provider messages. Native Codex files are scanned when modified within
+OpenAI-provider messages. Native Codex rollouts started on any other model
+provider (`--oss`, or a custom one in `config.toml`) are skipped. Native Codex
+files are scanned when modified within
 the last 30 days; their older recorded turns are included too. Model totals
 therefore describe the history scanned by the collector, not a guaranteed
 lifetime account total or the currently selected model. Daily totals use the
@@ -103,9 +116,17 @@ The plugin id is **`rafi.agents`** on every machine; it does not depend on
 your login name. Omarchy clones the entire repository, including collectors,
 into `~/.config/omarchy/plugins/rafi.agents/`. No separate setup script or
 background service is required. The widget refreshes automatically every
-15 minutes. Left-click the icon to open the popup. Press `r` or Enter to force
-a refresh; the Refresh button has a one-minute cooldown after an update.
-Right-click the bar icon to open Omarchy's agent picker.
+15 minutes. Left-click the icon to open the popup, middle-click to refresh,
+right-click to open Omarchy's agent picker.
+
+In the popup the arrows (or `h`/`j`/`k`/`l`) walk a cursor over everything
+that does something: the hero's buttons, each provider's header, its
+_Sign-in required_ link or switchable accounts, and the starter tiles. A
+section taller than the popup scrolls before the cursor leaves it. Enter acts
+on what is lit, or forces a refresh when nothing is; `r` refreshes too, and
+the Refresh button has a one-minute cooldown after an update. `1`–`9` jump to
+an account, `m` toggles automatic switching for its provider, Tab moves to the
+neighboring bar panel, and Esc closes.
 
 To keep idle CPU usage low, countdowns and chart geometry pause while the popup
 is closed. History files are watched and parsed once, shared by the bar and panel.
@@ -160,7 +181,7 @@ only scans `$OMARCHY_PATH/bin/`, so this plugin runs its bundled collectors dire
 | `collectors/omarchy-agent-usage-grok` | SuperGrok weekly percent + plan name |
 | `collectors/omarchy-agent-usage-grokbot` | Grok Bot weekly Sand allowance (Cursor session) |
 | `collectors/omarchy-agent-usage-cursor` | Ultra monthly Cursor / Other percents |
-| `collectors/omarchy-agent-usage-codex` | Codex rate-limit windows + local token/model statistics |
+| `collectors/omarchy-agent-usage-codex` | Codex rate-limit windows (per account) + local token/model statistics |
 | `collectors/omarchy-agent-usage-antigravity` | Running Antigravity app's plan and model quota windows |
 | `collectors/run-usage-update` | Bundled collectors, user additions, then packaged providers |
 | `plugin/history.py` | leftover time series (plateau-merged) |
@@ -171,6 +192,14 @@ Disabled providers and targeted retries are respected. Collectors run in
 parallel with a 90-second limit, and failed/invalid results leave the last
 valid snapshot intact. History is recorded after each update, including
 updates run outside the panel.
+
+The Codex collector is Omarchy's packaged one plus the window start that the
+pace tick and the chart need, so it reports every registered Codex account.
+Where `omarchy agent account` exists, the runner also refreshes the account
+registry before a bundled Claude, Codex, or Grok collector runs and lets
+`omarchy-agent-account-state autoswitch` act on the fresh limits afterwards,
+as the packaged update does for its own collectors. The bundled Grok
+collector reads the single login in `GROK_HOME`; it does not list accounts.
 
 Normal Codex updates can reuse a local scan for 20 seconds to deduplicate
 concurrent requests. `--limits-only` can reuse it for up to 15 minutes;
@@ -209,6 +238,8 @@ charts only plot windows about 7 days or longer.
 |---|---|
 | `~/.local/state/omarchy/agents/usage/<id>.json` | latest snapshot (percents, plan, optional token totals) |
 | `~/.local/state/omarchy/agents/history/<id>.json` | leftover samples for the chart |
+| `~/.local/state/omarchy/agents/order.json` | the popup's provider order, once changed |
+| `~/.local/state/omarchy/agents/accounts/` | Omarchy's subscription account registry (read only) |
 | `~/.config/omarchy/agents/` | optional additional user collectors |
 | `~/.config/omarchy/plugins/rafi.agents/` | Git checkout, widget, bundled collectors |
 | `~/.cache/omarchy/agent-usage/` | Collector quota caches and Codex scan cache / lock |
@@ -241,8 +272,10 @@ Collector tests run in temporary directories. Installation tests require
 the Omarchy CLI; shared-backend tests require Quickshell; panel tests also
 require an active Wayland session. The panel test uses an isolated backend
 and fake collectors, checks provider-specific tooltips and model totals, and
-lays out overflow content without opening a desktop overlay. Tests with
-missing runtime requirements are skipped.
+lays out overflow content without opening a desktop overlay. A second panel
+test covers accounts with fake `omarchy agent account` helpers: the cursor's
+stops, switching and renaming, and that collector-supplied text stays plain
+text. Tests with missing runtime requirements are skipped.
 
 The installed checkout and your development checkout are separate. Edit the
 development checkout, commit, then reinstall or push and use

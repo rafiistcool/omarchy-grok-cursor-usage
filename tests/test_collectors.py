@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import importlib.machinery
 import importlib.util
 import json
@@ -103,6 +104,34 @@ class RunnerTests(unittest.TestCase):
         history = json.loads((self.usage.parent / 'history/grok.json').read_text())
         self.assertEqual(history['series'][0]['points'][0]['remaining'], .75)
 
+    def test_bundled_account_agent_refreshes_registry_and_follows_a_switch(self):
+        accounts = self.usage.parent / 'accounts'
+        accounts.mkdir(parents=True)
+        (accounts / 'codex.json').write_text('{}')
+        for agent in ('codex', 'cursor'):
+            self.collector(self.bundled, agent)
+        # Stands in for omarchy-agent-account-state: logs each call, and
+        # answers autoswitch the way a switch is reported.
+        state = self.root / 'packaged/bin/omarchy-agent-account-state'
+        state.write_text('#!/bin/sh\necho "$*" >> "$HOME/account-state.log"\nif [ "$1" = autoswitch ]; then echo "$2"; fi\n')
+        state.chmod(0o755)
+        result = self.run_update('--force')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'account-state.log').read_text().splitlines(), ['refresh codex', 'autoswitch codex'])
+        # The switch changed whose limits the record describes, so that record
+        # was collected once more; an agent without accounts was left alone.
+        self.assertEqual(json.loads((self.usage / 'codex.json').read_text())['args'], ['--limits-only'])
+        self.assertEqual(json.loads((self.usage / 'cursor.json').read_text())['args'], ['--force'])
+
+    def test_account_steps_are_skipped_without_the_account_tools(self):
+        accounts = self.usage.parent / 'accounts'
+        accounts.mkdir(parents=True)
+        (accounts / 'codex.json').write_text('{}')
+        self.collector(self.bundled, 'codex')
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.usage / 'codex.json').read_text())['args'], [])
+
 
 class CodexRPCTests(unittest.TestCase):
     @classmethod
@@ -110,8 +139,10 @@ class CodexRPCTests(unittest.TestCase):
         cls.codex = load_collector('codex')
 
     def process(self, code):
+        # Text pipes, as the collector opens the app-server; replies are still
+        # read from the raw descriptor.
         proc = subprocess.Popen([sys.executable, '-u', '-c', code], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         def cleanup():
             if proc.poll() is None:
                 proc.kill()
@@ -132,21 +163,55 @@ class CodexRPCTests(unittest.TestCase):
             self.codex.rpc_request(proc, 1, 'test', timeout=.15)
         self.assertLess(time.monotonic() - start, .8)
 
+    def test_exited_server_fails_at_once(self):
+        proc = self.process('import sys\nsys.stdin.readline()')
+        start = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, 'exited before test'):
+            self.codex.rpc_request(proc, 1, 'test', timeout=3)
+        self.assertLess(time.monotonic() - start, 1.5)
+
+    def fetch(self, proc, replies):
+        with patch.object(self.codex, 'find_codex_binary', return_value='fake-codex'), \
+             patch.object(self.codex, 'has_codex_credentials', return_value=True), \
+             patch.object(self.codex.subprocess, 'Popen', return_value=proc), \
+             patch.object(self.codex, 'rpc_request', side_effect=replies):
+            return self.codex.fetch_codex_rpc()
+
     def test_rpc_error_is_not_success(self):
-        proc = self.process('import sys,time\nsys.stdin.readline()\nprint(\'{"id":1,"error":{"code":-1}}\',flush=True)\ntime.sleep(3)')
-        with self.assertRaisesRegex(RuntimeError, 'RPC failed'):
-            self.codex.rpc_request(proc, 1, 'test', timeout=.5)
+        # A home nobody is signed in to answers the limits read with an error;
+        # the panel offers to sign it in again on exactly this status.
+        proc = self.process('import time\ntime.sleep(3)')
+        result = self.fetch(proc, [{'id': 1, 'result': {}}, {'id': 2, 'error': {'message': 'Authentication required'}}])
+        self.assertEqual((result['usageStatusText'], result['limits']), ('Waiting for auth', []))
+        proc = self.process('import time\ntime.sleep(3)')
+        result = self.fetch(proc, [{'id': 1, 'result': {}}, {'id': 2, 'error': {'message': 'quota backend down'}}])
+        self.assertEqual((result['usageStatusText'], result['authHelpText'], result['limits']),
+                         ('Codex limits unavailable', 'quota backend down', []))
+
+    def test_limits_carry_window_start_and_reset_credits(self):
+        proc = self.process('import time\ntime.sleep(3)')
+        reset = 1790000000
+        result = self.fetch(proc, [{'id': 1, 'result': {}}, {'id': 2, 'result': {
+            'rateLimits': {'planType': 'pro', 'primary': {'usedPercent': 25, 'windowDurationMins': 10080, 'resetsAt': reset},
+                           'secondary': {'usedPercent': 60, 'windowDurationMins': 300, 'resetsAt': reset}},
+            'rateLimitResetCredits': {'credits': [{'status': 'available', 'expiresAt': reset}, {'status': 'used'}]}}}])
+        weekly, session = result['limits']
+        self.assertEqual((weekly['title'], weekly['percent'], session['title']), ('Weekly', .25, '5h window'))
+        # The pace tick and the remaining chart both need the window's start.
+        end = datetime.fromtimestamp(reset, timezone.utc)
+        self.assertEqual(weekly['resetsAt'], end.isoformat())
+        self.assertEqual(weekly['startsAt'], (end - timedelta(days=7)).isoformat())
+        self.assertEqual(session['startsAt'], (end - timedelta(hours=5)).isoformat())
+        self.assertEqual((result['tierLabel'], result['usageStatusText'], result['resetCredits']['available']), ('pro', '', 1))
 
     def test_timeout_terminates_server_without_blocking_on_stderr(self):
         proc = self.process('import time\ntime.sleep(3)')
         start = time.monotonic()
-        with patch.object(self.codex, 'find_command', return_value='fake-codex'), \
-             patch.object(self.codex.subprocess, 'Popen', return_value=proc), \
-             patch.object(self.codex, 'rpc_request', side_effect=TimeoutError('initialize')):
-            result = self.codex.fetch_codex_rpc()
+        result = self.fetch(proc, TimeoutError('initialize'))
         self.assertEqual(result['usageStatusText'], 'Codex limits unavailable')
         self.assertIsNotNone(proc.poll())
-        self.assertLess(time.monotonic() - start, .8)
+        # The server gets a second to exit and explain itself, never longer.
+        self.assertLess(time.monotonic() - start, 2.5)
 
 
 class AntigravityTests(unittest.TestCase):

@@ -15,6 +15,12 @@ Grok, Grok Bot, Cursor, and Antigravity currently supply quotas only. Codex
 supplies local token history; Claude and Fireworks use the packaged Omarchy
 collectors. Missing token data leaves those sections hidden.
 
+A record that carries `accounts` (several subscription accounts registered
+with `omarchy agent account`) lists each account with its own meters and the
+controls to switch between them. Adding a subscription, signing in again, and
+the starter tiles sit in the hero and at the foot of the page. The account
+controls appear only where `omarchy-agent-account-add` is installed.
+
 Install and update through Omarchy:
 
 ```bash
@@ -33,7 +39,8 @@ files, username substitution, or external collector installation is needed.
   bars. It discovers usage records, runs collectors, watches quota history,
   schedules retries, and optionally merges synced token statistics.
 - `Agent.qml` watches one usage JSON file. `Panel.qml` renders each provider's
-  quotas, chart, and token rows; daily tooltips receive that row's provider.
+  quotas, accounts, chart, and token rows; daily tooltips receive that row's
+  provider.
 - `history.py` records long-window remaining percentages, merges plateaus,
   and retains up to 21 days / 500 points per series.
 - The backend continues collecting while the popup is closed. Countdown
@@ -66,7 +73,9 @@ omarchy shell shell rescanPlugins
 The panel regression test loads the real panel with isolated fake collectors.
 It verifies separate provider counts, cache-token totals, token-only provider
 visibility, zero-token days, top-four ordering, long-name elision, and
-scrolling. It needs Omarchy, Quickshell, and an active Wayland session; other
+scrolling. The accounts test adds the cursor's stops, account switching through
+fake helpers, and plain-text rendering of collector-supplied strings.
+They need Omarchy, Quickshell, and an active Wayland session; other
 tests skip their runtime-specific checks when those tools are unavailable.
 
 See [../README.md](../README.md) for migration, collector precedence, and settings.

@@ -6,6 +6,11 @@ USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
 BUNDLED_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/agents"
 PACKAGED="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-agent-usage-update"
+# `omarchy agent account` and its registry of subscription accounts. An
+# Omarchy release from before agent accounts has neither, and the account
+# steps below are skipped.
+ACCOUNT_STATE="${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-agent-account-state"
+ACCOUNTS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/accounts"
 
 mkdir -p "$USAGE_DIR"
 
@@ -57,8 +62,18 @@ collect_stdout() {
   mv "$tmp" "$USAGE_DIR/$agent.json"
 }
 
+# The packaged update keeps the account registry current and switches accounts
+# near a limit, but only for the agents it collects itself. A collector here
+# stands in for the packaged one, so for its agent both steps are done here,
+# the way the packaged update does them.
+has_accounts() {
+  [[ $1 == claude || $1 == codex || $1 == grok ]] && [[ -x $ACCOUNT_STATE && -f $ACCOUNTS_DIR/$1.json ]]
+}
+
 shopt -s nullglob
-pids=()
+collectors=()
+agents=()
+account_agents=()
 for collector in "$BUNDLED_DIR"/omarchy-agent-usage-* "$USER_DIR"/omarchy-agent-usage-*; do
   [[ -x $collector && -f $collector ]] || continue
   agent="${collector##*/omarchy-agent-usage-}"
@@ -67,7 +82,22 @@ for collector in "$BUNDLED_DIR"/omarchy-agent-usage-* "$USER_DIR"/omarchy-agent-
   seen[$agent]=1
   except+=(--except "$agent")
   wanted "$agent" || continue
-  collect_stdout "$collector" "$agent" "${user_flags[@]}" &
+  collectors+=("$collector")
+  agents+=("$agent")
+  if has_accounts "$agent"; then
+    account_agents+=("$agent")
+  fi
+done
+
+# Accounts can be signed in to someone else since they were added; the
+# records name them from the registry, so bring it up to date first.
+for agent in "${account_agents[@]}"; do
+  timeout --kill-after=2s 20s "$ACCOUNT_STATE" refresh "$agent" || true
+done
+
+pids=()
+for i in "${!collectors[@]}"; do
+  collect_stdout "${collectors[$i]}" "${agents[$i]}" "${user_flags[@]}" &
   pids+=("$!")
 done
 
@@ -78,6 +108,18 @@ fi
 
 for pid in "${pids[@]}"; do
   wait "$pid" || status=1
+done
+
+# Fresh limits are when switching accounts near a limit gets decided. A switch
+# changes which account the record's own limits describe, so that record is
+# collected once more; the limits probes it repeats are still cached.
+for i in "${!collectors[@]}"; do
+  agent="${agents[$i]}"
+  has_accounts "$agent" || continue
+  switched=$(timeout --kill-after=2s 20s "$ACCOUNT_STATE" autoswitch "$agent") || continue
+  if [[ -n $switched ]]; then
+    collect_stdout "${collectors[$i]}" "$agent" --limits-only || status=1
+  fi
 done
 
 # Also works without the panel (for example from a user timer).

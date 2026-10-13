@@ -73,8 +73,9 @@ Field notes:
 - `schemaVersion` — currently `1`; the runner checks it and the record's `id`.
 - `updatedAt` — snapshot timestamp in ISO-8601, used by the refresh cooldown.
 - `ready` — collection status. Provider visibility depends on usable data:
-  quotas, a balance, token totals, or recorded activity. `ready` alone does
-  not create a visible provider.
+  quotas, a balance, accounts, token totals, or recorded activity. A `ready`
+  record that names a plan in `tierLabel` is shown too, so a signed-in
+  provider has a place to report trouble before its first numbers arrive.
 - `percent` — **used** fraction in `0..1` (0.42 means 42% used, 58% left).
 - `title` — `Weekly` / `Monthly` (or any label). Session / 5-hour windows are
   shown as meters but **not** charted. Remaining charts start at 7-day windows.
@@ -88,6 +89,23 @@ Field notes:
   Account API token data may set it too; use `scope` to control aggregation.
 - `authHelpText` — shown when the user needs to sign in. Leave empty when
   `ready` is true.
+- `usageStatusText` — a short status. `Waiting for auth` and `Sign-in expired`
+  turn into a _Sign-in required_ link for Claude, Codex, and Grok (the agents
+  `omarchy agent account` can sign in); other providers show `authHelpText`
+  instead. `Limits paused` with no limits shows _Usage unavailable_. Anything
+  else is reported in the urgent color.
+- `limitsStale` / `limitsFetchedAt` — optional. `true` and a millisecond
+  timestamp when the limits are kept from an earlier check; they are dimmed
+  and say how old they are on hover.
+- `resetCredits` — optional `{ available, nextExpiresAt }`, shown under the
+  limits (Codex's free full resets).
+- `accounts` / `accountSwitch` — optional, for a provider with several
+  subscription accounts in Omarchy's registry:
+  `accounts: [{ id, label, email, plan, active, primary, limits, stale,
+  fetchedAt, usageStatusText, authHelpText, resetCredits }]` and
+  `accountSwitch: { mode: "manual" | "auto", threshold }`. The top-level
+  `limits` and `tierLabel` keep describing the active account. Each account's
+  `limits` use the shape above, so `startsAt` gives it a pace tick too.
 - `balance` — optional prepaid ledger `{ remaining, funded, spent, currency, estimated }`.
 - `recentDays` — recent seven-day token history as `{ date: "YYYY-MM-DD", messageCount: <tokens> }`.
   Despite its name, `messageCount` holds the day's token total.
@@ -111,7 +129,8 @@ Field notes:
 - Leave `recentDays` empty and `modelUsage` as `{}` when token data is unavailable.
   Set `hasPromptStats: false` when prompt/session counts are unavailable.
 
-Do not put authentication tokens, emails, or cookie values in the record.
+Do not put authentication tokens or cookie values in the record, and no
+emails beyond the account labels Omarchy's registry already holds.
 
 For token data, populate the fields above, for example:
 
