@@ -58,6 +58,9 @@ Quota chart examples for Grok and Cursor:
   they are left out and the rest of the popup works as before.
 - **Token tables** — beneath each provider's quota chart, daily totals for
   the collector's recent seven-day history and the top four models by tokens.
+  Both fold away behind their headers and start closed, each header saying
+  what is behind it (today's tokens, the heaviest model); click a header, or
+  press Enter on it, to open the table. What you leave open is remembered.
   Today's row is highlighted; hover for prompt/session counts or a model's
   input, output, cache-read, and cache-write breakdown. Model totals cover all
   collector-supplied history, not just the current quota cycle. Tables appear
@@ -296,6 +299,7 @@ Top-level keys on the bar entry (`omarchy bar set rafi.agents …`):
 | `remainingBarHeight` | `3` | meter height |
 | `remainingFontSize` | `10` | percentage font size |
 | `providers` | all bundled / stock ids enabled | per-provider `{ "enabled": false }` hides and stops polling that provider |
+| `openTokenSections` | `[]` | token tables left open, as `"<provider>.days"` / `"<provider>.models"`; written when you fold or unfold one |
 | `syncMode` | `Off` | `On` enables token-statistic aggregation when a folder is configured |
 | `syncDir` | empty | folder managed by Syncthing, Dropbox, rsync, or another sync tool |
 | `syncFileName` | empty | defaults to `<device-id>.json`; use a unique filename on each machine |
@@ -330,7 +334,9 @@ folder itself.
 
 ### Troubleshooting
 
-- **Missing token tables:** Grok, Grok Bot, Cursor, and Antigravity currently
+- **Missing token tables:** the tables start folded; click **TOKENS BY DAY**
+  or **TOKENS BY MODEL** to open one. Grok, Grok Bot, Cursor, and Antigravity
+  currently
   collect quotas only. Codex needs local token-bearing history; packaged
   providers depend on the data their collectors return.
 - **Old totals:** press `r` to force a full update. Token counts reflect the

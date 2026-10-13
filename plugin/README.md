@@ -6,7 +6,9 @@ points at `plugin/Panel.qml`.
 
 The popup stacks every enabled provider that has quota, balance, or activity
 data. Quotas and remaining charts come first; **TOKENS BY DAY** and
-**TOKENS BY MODEL** follow when the collector supplies their data. Daily
+**TOKENS BY MODEL** follow when the collector supplies their data, folded
+behind their headers until opened. The open ones are saved on the widget's
+bar entry as `openTokenSections`. Daily
 rows highlight today in the local timezone. Model rows show the top four
 models across collector-supplied history, with input/output/cache counts on
 hover. They do not identify the model currently running in an app.

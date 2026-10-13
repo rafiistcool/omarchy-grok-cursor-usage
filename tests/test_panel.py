@@ -109,9 +109,26 @@ ShellRoot {
         check(service.enabledProviders.length === 3, "token-only providers displayed")
         Qt.callLater(function() {
           try {
-            var items = allItems(panel,[])
-            var days = items.filter(function(item) { return "day" in item && "ratio" in item })
-            var models = items.filter(function(item) { return "row" in item && "share" in item })
+            var dayRows = function() { return allItems(panel,[]).filter(function(item) { return "day" in item && "ratio" in item }) }
+            var modelRows = function() { return allItems(panel,[]).filter(function(item) { return "row" in item && "share" in item }) }
+            check(dayRows().length === 0 && modelRows().length === 0, "token tables start folded")
+            var folds = allItems(panel,[]).filter(function(item) { return "summary" in item && "open" in item && item.summary !== "" })
+            check(folds.length === 4 && folds.every(function(item) { return !item.open }), "a folded table keeps its header and a summary")
+            check(folds.some(function(item) { return item.summary === "GPT 6.1 Sol · 155" }), "model summary names the heaviest model")
+            var byId = {}
+            panel.providers.forEach(function(p) { byId[p.providerId] = p })
+            check(panel.keyRows.some(function(row) { return row[0].kind === "days" }) && panel.keyRows.some(function(row) { return row[0].kind === "models" }),
+              "the fold headers are cursor stops")
+            panel.toggleTokenSection(byId.first, "days")
+            check(panel.settings.openTokenSections.join() === "first.days" && panel.tokenSectionOpen(byId.first, "days"),
+              "what's open is kept with the widget settings")
+            check(dayRows().length === 2 && modelRows().length === 0, "one table opens on its own")
+            panel.pointAt("days", panel.providers.map(function(p) { return p.providerId }).indexOf("first"))
+            panel.activateSelection()
+            check(panel.settings.openTokenSections.length === 0 && dayRows().length === 0, "activating the header again folds it")
+            panel.settings = {openTokenSections:["first.days","first.models","second.days","second.models"]}
+            var days = dayRows()
+            var models = modelRows()
             check(days.length === 3 && models.length === 5, "rendered table rows")
             var firstDays = days.filter(function(item) { return item.provider.providerId === "first" })
             check(firstDays.length === 2, "daily rows retain provider")

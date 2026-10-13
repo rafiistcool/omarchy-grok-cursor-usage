@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "rafi.agents",
   "name": "Agents",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "omarchy-grok-cursor-usage contributors",
   "license": "MIT",
   "description": "AI coding quotas, daily token counts, and model usage on the Omarchy bar, with remaining-over-time charts and even-burn pace.",
@@ -57,7 +57,8 @@
       "remainingBarWidth": 13,
       "remainingBarHeight": 3,
       "remainingFontSize": 10,
-      "remainingAxis": "days"
+      "remainingAxis": "days",
+      "openTokenSections": []
     },
     "schema": [
       {

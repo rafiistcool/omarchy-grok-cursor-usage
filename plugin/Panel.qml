@@ -65,7 +65,8 @@ Panel {
 
   // The keyboard walks everything on the page that does something, in
   // reading order, one row at a time: the hero's buttons, then each agent's
-  // header, its Sign-in required link or switchable accounts, and the starter
+  // header, its Sign-in required link or switchable accounts, the headers
+  // that fold its token tables, and the starter
   // tiles, or the agents to add while picking one. Up and down change rows,
   // left and right move along one. Hovering moves the same cursor, so only
   // one thing is lit.
@@ -91,17 +92,19 @@ Panel {
         var accounts = providerAccounts(providers[p])
         if (accounts.length < 2) {
           if (signInOffered(providers[p])) rows.push([{ kind: "providerSignin", index: p }])
-          continue
-        }
-        for (var a = 0; a < accounts.length; a++, entry++) {
-          var row = []
-          if (needsSignIn(accounts[a])) row.push({ kind: "signin", index: entry })
-          if (!accounts[a].active) {
-            row.push({ kind: "autoswitch", index: entry })
-            row.push({ kind: "account", index: entry })
+        } else {
+          for (var a = 0; a < accounts.length; a++, entry++) {
+            var row = []
+            if (needsSignIn(accounts[a])) row.push({ kind: "signin", index: entry })
+            if (!accounts[a].active) {
+              row.push({ kind: "autoswitch", index: entry })
+              row.push({ kind: "account", index: entry })
+            }
+            if (row.length > 0) rows.push(row)
           }
-          if (row.length > 0) rows.push(row)
         }
+        if (hasDayTokens(providers[p])) rows.push([{ kind: "days", index: p }])
+        if (hasModelTokens(providers[p])) rows.push([{ kind: "models", index: p }])
       }
       if (!blankSlate) {
         var tiles = []
@@ -163,7 +166,7 @@ Panel {
   function providerIndexOfRow(r) {
     if (r < 0 || r >= keyRows.length || keyRows[r].length === 0) return -1
     var target = keyRows[r][0]
-    if (target.kind === "provider" || target.kind === "providerSignin") return target.index
+    if (["provider", "providerSignin", "days", "models"].indexOf(target.kind) >= 0) return target.index
     if (["account", "autoswitch", "signin"].indexOf(target.kind) < 0) return -1
     var entry = accountEntries[target.index]
     return entry ? providers.indexOf(entry.provider) : -1
@@ -387,6 +390,48 @@ Panel {
     var next = String(mode || "") === "cycle" ? "cycle" : "days"
     if (next === root.remainingAxis) return
     persistSettings({ remainingAxis: next })
+  }
+
+  // The token tables fold away behind their headers and start closed: the
+  // page is for what's left, and the history is a click away. The ones left
+  // open are kept with the widget's other settings, a "<provider>.<section>"
+  // entry each.
+  readonly property var openTokenSections: {
+    var saved = setting("openTokenSections", [])
+    var list = []
+    if (saved && typeof saved !== "string" && saved.length !== undefined)
+      for (var i = 0; i < saved.length; i++) list.push(String(saved[i]))
+    return list
+  }
+
+  function tokenSectionOpen(p, section) {
+    return !!p && openTokenSections.indexOf(p.providerId + "." + section) >= 0
+  }
+
+  function toggleTokenSection(p, section) {
+    if (!p) return
+    var key = p.providerId + "." + section
+    var next = openTokenSections.filter(function(entry) { return entry !== key })
+    if (next.length === openTokenSections.length) next.push(key)
+    persistSettings({ openTokenSections: next })
+  }
+
+  function hasDayTokens(p) {
+    return !!p && !!p.recentDays && p.recentDays.length > 0
+  }
+
+  function hasModelTokens(p) {
+    return modelRows(p).length > 0
+  }
+
+  // What a closed table still says in its header.
+  function dayTokensSummary(p) {
+    return hasDayTokens(p) ? usage.formatTokenCount(Number(p.todayTotalTokens || 0)) + " today" : ""
+  }
+
+  function modelTokensSummary(p) {
+    var rows = modelRows(p)
+    return rows.length > 0 ? rows[0].name + " · " + usage.formatTokenCount(rows[0].total) : ""
   }
 
   function settingOn(name, fallback) {
@@ -634,6 +679,7 @@ Panel {
     else if (target.kind === "launch") launchAgent()
     else if (target.kind === "starter") startPrompt(starterPrompts[target.index].prompt)
     else if (target.kind === "providerSignin") signInAgain(providers[target.index], null)
+    else if (target.kind === "days" || target.kind === "models") toggleTokenSection(providers[target.index], target.kind)
     else if (target.kind === "signin") signInAgain(pickedEntry.provider, pickedEntry.account)
     else if (target.kind === "autoswitch") setSwitchMode(pickedEntry.provider, autoSwitchFor(pickedEntry.provider) ? "manual" : "auto")
     else if (pickedEntry && !pickedEntry.account.active) useAccount(pickedEntry.provider, pickedEntry.account)
@@ -2386,19 +2432,23 @@ Panel {
       id: usageSection
       readonly property var days: block.provider ? (block.provider.recentDays || []) : []
       readonly property real peak: Math.max(1, root.weekPeak(block.provider))
+      readonly property bool open: root.tokenSectionOpen(block.provider, "days")
       visible: days.length > 0
       width: parent.width
       spacing: Style.spacing.md
 
-      PanelSectionHeader {
+      FoldHeader {
         width: parent.width
         text: "TOKENS BY DAY"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
+        summary: root.dayTokensSummary(block.provider)
+        open: usageSection.open
+        hasCursor: root.hasKey("days", block.providerIndex)
+        onHovered: root.pointAt("days", block.providerIndex)
+        onClicked: root.toggleTokenSection(block.provider, "days")
       }
 
       Repeater {
-        model: usageSection.days
+        model: usageSection.open ? usageSection.days : []
         DayRow {
           required property var modelData
           width: usageSection.width
@@ -2418,19 +2468,23 @@ Panel {
 
     Column {
       id: modelSection
+      readonly property bool open: root.tokenSectionOpen(block.provider, "models")
       visible: block.models.length > 0
       width: parent.width
       spacing: Style.spacing.md
 
-      PanelSectionHeader {
+      FoldHeader {
         width: parent.width
         text: "TOKENS BY MODEL"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
+        summary: root.modelTokensSummary(block.provider)
+        open: modelSection.open
+        hasCursor: root.hasKey("models", block.providerIndex)
+        onHovered: root.pointAt("models", block.providerIndex)
+        onClicked: root.toggleTokenSection(block.provider, "models")
       }
 
       Repeater {
-        model: block.models
+        model: modelSection.open ? block.models : []
         ModelRow {
           required property var modelData
           width: modelSection.width
@@ -3201,6 +3255,72 @@ Panel {
     PanelToolTip {
       visible: unavailableHover.hovered && unavailable.visible
       text: unavailable.record ? String(unavailable.record.authHelpText || "Usage has not been updated yet.") : ""
+    }
+  }
+
+  // A token table's header, which folds the table open and shut. Closed, it
+  // carries a one-line summary of what's behind it.
+  component FoldHeader: Item {
+    id: fold
+    signal clicked()
+    signal hovered()
+    property string text: ""
+    property string summary: ""
+    property bool open: false
+    property bool hasCursor: false
+    implicitHeight: Math.max(foldLabel.implicitHeight, foldSummary.implicitHeight)
+    onHasCursorChanged: if (hasCursor) root.revealItem(fold)
+
+    CursorSurface {
+      anchors.fill: parent
+      anchors.margins: -Style.space(4)
+      hasCursor: fold.hasCursor
+      foreground: root.foreground
+    }
+
+    Text {
+      id: foldChevron
+      anchors.left: parent.left
+      anchors.verticalCenter: foldLabel.verticalCenter
+      width: Style.space(14)
+      text: fold.open ? "▾" : "▸"
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+
+    PanelSectionHeader {
+      id: foldLabel
+      anchors.left: foldChevron.right
+      anchors.verticalCenter: parent.verticalCenter
+      text: fold.text
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+
+    Text {
+      id: foldSummary
+      visible: text !== ""
+      anchors.left: foldLabel.right
+      anchors.leftMargin: Style.space(10)
+      anchors.right: parent.right
+      anchors.verticalCenter: foldLabel.verticalCenter
+      horizontalAlignment: Text.AlignRight
+      textFormat: Text.PlainText
+      text: fold.open ? "" : fold.summary
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      anchors.margins: -Style.space(4)
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: fold.hovered()
+      onClicked: fold.clicked()
     }
   }
 
