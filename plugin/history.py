@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append Grok/Cursor/Codex remaining-quota samples for the agents panel chart.
+"""Append Grok/Cursor/Codex/Claude remaining-quota samples for the agents panel chart.
 
 Reads the latest usage JSON written by omarchy-agent-usage-update and merges
 unchanged remaining values into a plateau (t .. until) so idle 15-minute
@@ -18,7 +18,7 @@ from typing import Any
 
 sys.dont_write_bytecode = True
 
-AGENT_IDS = ("grok", "cursor", "codex", "antigravity", "grokbot")
+AGENT_IDS = ("grok", "cursor", "codex", "antigravity", "grokbot", "claude")
 REMAINING_DECIMALS = 4
 MAX_AGE_DAYS = 21
 MAX_POINTS = 500

@@ -170,14 +170,16 @@ Codex use the Omarchy icon font. Unknown provider ids use the generic bar glyph.
 ## 4. Remaining history (optional)
 
 `plugin/history.py` appends leftover samples for `grok`, `grokbot`, `cursor`,
-`codex`, and `antigravity` into `~/.local/state/omarchy/agents/history/<id>.json`.
+`codex`, `antigravity`, and `claude` into
+`~/.local/state/omarchy/agents/history/<id>.json`.
 To chart another 7-day+ window, add its id to `AGENT_IDS`, add a history
-`FileView` in `plugin/Main.qml` that calls `applyHistory`, and expose that
-history in `plugin/Panel.qml`. Include the id in `remainingSeriesFor`,
-`firstChartProviderIndex`, and the `ProviderBlock` chart visibility check.
+`FileView` in `plugin/Main.qml` that calls `applyHistory`, and add the id to
+`chartProviderIds` in `plugin/Panel.qml`.
 Token tables and quota meters
 need no chart registration. History retains up to 21 days and 500 points per
-series; short session windows remain meters only.
+series; short session windows remain meters only. A provider's chart starts
+with the first sample taken after it is registered: until one exists the
+chart holds the current leftover flat across the window so far.
 
 ## 5. Enable it
 

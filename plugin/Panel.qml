@@ -307,8 +307,7 @@ Panel {
   readonly property int firstChartProviderIndex: {
     var list = stackedProviders || []
     for (var i = 0; i < list.length; i++) {
-      var id = String(list[i].providerId || "")
-      if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") continue
+      if (!hasRemainingChart(list[i])) continue
       var series = remainingSeriesFor(list[i])
       if (series && series.length > 0) return i
     }
@@ -355,11 +354,15 @@ Panel {
   readonly property real openPanelIndicatorWidth: vertical ? 0 : remainingMeterLength
   readonly property real openPanelIndicatorHeight: vertical ? remainingMeterLength : 0
 
-  readonly property var grokRemaining: usage.remainingHistory.grok || null
-  readonly property var grokbotRemaining: usage.remainingHistory.grokbot || null
-  readonly property var cursorRemaining: usage.remainingHistory.cursor || null
-  readonly property var codexRemaining: usage.remainingHistory.codex || null
-  readonly property var antigravityRemaining: usage.remainingHistory.antigravity || null
+  // The providers history.py records leftover samples for, and so the ones
+  // that get a remaining chart. Claude's plots its weekly windows, the
+  // model-scoped one as a second line; its 5-hour session is a meter only,
+  // like every pool shorter than a week.
+  readonly property var chartProviderIds: ["grok", "grokbot", "cursor", "codex", "antigravity", "claude"]
+
+  function hasRemainingChart(provider) {
+    return !!provider && chartProviderIds.indexOf(String(provider.providerId || "")) >= 0
+  }
   readonly property string agentsHistoryDir: (Quickshell.env("XDG_STATE_HOME") || ((Quickshell.env("HOME") || "") + "/.local/state")) + "/omarchy/agents/history"
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
@@ -981,13 +984,8 @@ Panel {
   }
 
   function remainingSeriesFor(provider) {
-    var id = provider ? String(provider.providerId || "") : ""
-    if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") return []
-    var hist = id === "grok" ? root.grokRemaining
-      : id === "grokbot" ? root.grokbotRemaining
-      : id === "cursor" ? root.cursorRemaining
-      : id === "antigravity" ? root.antigravityRemaining
-      : root.codexRemaining
+    if (!hasRemainingChart(provider)) return []
+    var hist = usage.remainingHistory[String(provider.providerId)] || null
     if (hist && Array.isArray(hist.series) && hist.series.length > 0)
       return remainingChartSeries(hist.series)
     if (provider && Array.isArray(provider.remainingSeries) && provider.remainingSeries.length > 0)
@@ -2412,8 +2410,7 @@ Panel {
 
     RemainingChart {
       visible: {
-        var id = block.provider ? String(block.provider.providerId || "") : ""
-        if (id !== "grok" && id !== "grokbot" && id !== "cursor" && id !== "codex" && id !== "antigravity") return false
+        if (!root.hasRemainingChart(block.provider)) return false
         var series = root.remainingSeriesFor(block.provider)
         return !!(series && series.length > 0)
       }

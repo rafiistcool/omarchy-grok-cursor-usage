@@ -33,7 +33,9 @@ Quota chart examples for Grok and Cursor:
 - **Countdown meters** — fill is remaining, not spent. A red tick is
   even-burn remaining (elapsed fraction of the quota window). Caption is
   reserve / deficit / on pace.
-- **Remaining over time** — leftover vs time for 7-day (or longer) windows.
+- **Remaining over time** — leftover vs time for 7-day (or longer) windows,
+  for Grok, Grok Bot, Cursor, Codex, Antigravity, and Claude. Claude's chart
+  plots its weekly windows, the model-scoped one as a second line.
   5-hour session pools are ignored. Identical leftover samples collapse to a
   plateau so a 15-minute poll does not pile dots.
   - **2 days** (default): a 2-day span (1.8 days before now, 0.2 after),
@@ -81,7 +83,7 @@ Quota chart examples for Grok and Cursor:
 | Cursor | Monthly Cursor-model and other-model pools | Not collected |
 | Codex | Rate-limit windows, plan, and free reset credits through app-server RPC, per account when several are registered | Local Codex, pi/omp, and OpenCode history |
 | Antigravity | Gemini and third-party model windows from the running app | Not collected |
-| Claude | Packaged Omarchy collector | Whatever the packaged collector supplies |
+| Claude | Packaged Omarchy collector; weekly windows are charted | Whatever the packaged collector supplies |
 | Fireworks | Packaged Omarchy collector, including estimated balance | Whatever the packaged collector supplies |
 
 Codex reads native `sessions` and `archived_sessions` under `CODEX_HOME`
@@ -187,7 +189,7 @@ only scans `$OMARCHY_PATH/bin/`, so this plugin runs its bundled collectors dire
 | `collectors/omarchy-agent-usage-codex` | Codex rate-limit windows (per account) + local token/model statistics |
 | `collectors/omarchy-agent-usage-antigravity` | Running Antigravity app's plan and model quota windows |
 | `collectors/run-usage-update` | Bundled collectors, user additions, then packaged providers |
-| `plugin/history.py` | leftover time series (plateau-merged) |
+| `plugin/history.py` | leftover time series (plateau-merged) for the charted providers |
 
 Bundled collectors take precedence over old copies in
 `~/.config/omarchy/agents/`; additional user collectors are still supported.

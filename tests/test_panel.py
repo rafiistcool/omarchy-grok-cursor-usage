@@ -231,6 +231,17 @@ ShellRoot {
             var rows = panel.keyRows.map(kinds)
             check(rows.join("|") === "add0,launch0|provider0|providerSignin0|provider1|provider2|autoswitch1,account1|signin2,autoswitch2,account2|starter0,starter1,starter2",
               "cursor stops: " + rows.join("|"))
+            // Claude's chart: weekly windows from history, never the session.
+            check(panel.hasRemainingChart(byId.claude) && !panel.hasRemainingChart({providerId:"fireworks"}), "Claude is a charted provider")
+            check(panel.remainingSeriesFor(byId.claude).length === 0, "nothing to chart from a session window alone")
+            var week = new Date(Date.now() - 2 * 86400000).toISOString()
+            service.applyHistory("claude", JSON.stringify({series:[
+              {id:"weekly-7-day",title:"Weekly (7-day)",points:[{t:past,remaining:.6,startsAt:week,resetsAt:soon}]},
+              {id:"fable-weekly",title:"Fable Weekly",points:[{t:past,remaining:.9,startsAt:week,resetsAt:soon}]},
+              {id:"session-5-hour",title:"Session (5-hour)",points:[{t:past,remaining:.2,resetsAt:soon}]}]}))
+            check(panel.remainingSeriesFor(byId.claude).map(function(series) { return series.title }).join() === "Weekly (7-day),Fable Weekly",
+              "Claude charts its weekly windows from history")
+            check(panel.firstChartProviderIndex === panel.providers.map(function(p) { return p.providerId }).indexOf("grok"), "the first chart keeps the header")
             var expired = panel.limitWindows(byId.claude)[1]
             check(expired.percent === 0 && expired.resetAt === "", "a window past its reset reads empty")
             var unknown = {title:"Odd", percent:.2, resetAt:soon, startsAt:""}

@@ -104,6 +104,23 @@ class RunnerTests(unittest.TestCase):
         history = json.loads((self.usage.parent / 'history/grok.json').read_text())
         self.assertEqual(history['series'][0]['points'][0]['remaining'], .75)
 
+    def test_claude_history_keeps_weekly_windows_only(self):
+        record = dict(schemaVersion=1, id='claude', updatedAt='2026-09-27T12:00:00Z', limits=[
+            dict(label='Session (5-hour)', percent=.5, resetsAt='2026-09-27T15:00:00Z'),
+            dict(label='Weekly (7-day)', percent=.25, resetsAt='2026-10-02T00:00:00Z'),
+            dict(label='Fable Weekly', title='Fable Weekly', percent=.1, resetsAt='2026-10-02T00:00:00Z')])
+        self.collector(self.bundled, 'claude', 'print(' + repr(json.dumps(record)) + ')\n')
+        result = self.run_update()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = json.loads((self.usage.parent / 'history/claude.json').read_text())
+        # The 5-hour session is a meter only; the weekly windows are charted,
+        # with the start the collector leaves out inferred from the reset.
+        self.assertEqual([series['title'] for series in history['series']], ['Weekly (7-day)', 'Fable Weekly'])
+        point = history['series'][0]['points'][0]
+        self.assertEqual((point['remaining'], point['startsAt'], point['resetsAt']),
+                         (.75, '2026-09-25T00:00:00Z', '2026-10-02T00:00:00Z'))
+        self.assertEqual(history['series'][1]['points'][0]['remaining'], .9)
+
     def test_bundled_account_agent_refreshes_registry_and_follows_a_switch(self):
         accounts = self.usage.parent / 'accounts'
         accounts.mkdir(parents=True)

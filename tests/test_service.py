@@ -33,7 +33,8 @@ ShellRoot {
       service.applyHistory("antigravity", '{"series":[{"title":"Keep me"}]}')
       service.applyHistory("grokbot", '{"series":[]}')
       service.applyHistory("grok", '{"series":[]}')
-      if (!service.remainingHistory.antigravity || !service.remainingHistory.grokbot) {
+      service.applyHistory("claude", '{"series":[{"title":"Weekly (7-day)"}]}')
+      if (!service.remainingHistory.antigravity || !service.remainingHistory.grokbot || !service.remainingHistory.claude) {
         console.log("LOST_HISTORY"); Qt.quit(); return
       }
       service.agents = [{record:{id:"grok",retryAdvised:true}}]

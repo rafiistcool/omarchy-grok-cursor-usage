@@ -43,7 +43,8 @@ files, username substitution, or external collector installation is needed.
 - `Agent.qml` watches one usage JSON file. `Panel.qml` renders each provider's
   quotas, accounts, chart, and token rows; daily tooltips receive that row's
   provider.
-- `history.py` records long-window remaining percentages, merges plateaus,
+- `history.py` records long-window remaining percentages (Grok, Grok Bot,
+  Cursor, Codex, Antigravity, and Claude's weekly windows), merges plateaus,
   and retains up to 21 days / 500 points per series.
 - The backend continues collecting while the popup is closed. Countdown
   updates and chart geometry pause until it is opened.
