@@ -121,6 +121,24 @@ class RunnerTests(unittest.TestCase):
                          (.75, '2026-09-25T00:00:00Z', '2026-10-02T00:00:00Z'))
         self.assertEqual(history['series'][1]['points'][0]['remaining'], .9)
 
+    def test_history_merges_a_plateau_across_reset_time_jitter(self):
+        # Claude's reset comes back a moment either side of the real one on
+        # every poll; an unchanged leftover must still collapse to a plateau.
+        def sample(updated, reset, percent=.25):
+            record = dict(schemaVersion=1, id='claude', updatedAt=updated,
+                          limits=[dict(label='Weekly (7-day)', percent=percent, resetsAt=reset)])
+            self.collector(self.bundled, 'claude', 'print(' + repr(json.dumps(record)) + ')\n')
+            self.assertEqual(self.run_update().returncode, 0)
+            return json.loads((self.usage.parent / 'history/claude.json').read_text())['series'][0]['points']
+        sample('2026-09-27T12:00:00Z', '2026-10-01T23:59:59.592329+00:00')
+        points = sample('2026-09-27T12:15:00Z', '2026-10-02T00:00:00.428837+00:00')
+        self.assertEqual((len(points), points[0]['until']), (1, '2026-09-27T12:15:00Z'))
+        points = sample('2026-09-27T12:30:00Z', '2026-10-02T00:00:00.100000+00:00', percent=.5)
+        self.assertEqual([point['remaining'] for point in points], [.75, .5])
+        # The next cycle is a new window even at the same leftover.
+        points = sample('2026-10-02T00:10:00Z', '2026-10-09T00:00:00+00:00', percent=.5)
+        self.assertEqual(len(points), 3)
+
     def test_bundled_account_agent_refreshes_registry_and_follows_a_switch(self):
         accounts = self.usage.parent / 'accounts'
         accounts.mkdir(parents=True)

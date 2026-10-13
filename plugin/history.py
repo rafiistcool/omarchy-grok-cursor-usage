@@ -24,6 +24,10 @@ MAX_AGE_DAYS = 21
 MAX_POINTS = 500
 # Charts skip 5h/session pools. A window has to last about a week.
 MIN_CHART_WINDOW = timedelta(days=7) - timedelta(hours=2)
+# Collectors that work a reset out from "seconds from now" (Claude, Codex)
+# land a moment either side of it on every poll. Windows this close together
+# are one window; real cycles are days apart.
+WINDOW_JITTER = timedelta(minutes=2)
 
 
 def utcnow() -> datetime:
@@ -128,8 +132,15 @@ def series_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def window_key(point: dict[str, Any]) -> str:
-    return f"{point.get('startsAt') or ''}|{point.get('resetsAt') or ''}"
+def same_window(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    for key in ("startsAt", "resetsAt"):
+        left, right = parse_iso(a.get(key)), parse_iso(b.get(key))
+        if left is None or right is None:
+            if str(a.get(key) or "") != str(b.get(key) or ""):
+                return False
+        elif abs(left - right) > WINDOW_JITTER:
+            return False
+    return True
 
 
 def trim_points(points: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -156,11 +167,10 @@ def merge_sample(points: list[dict[str, Any]], sample: dict[str, Any], now_iso: 
         last = points[-1]
         last_end = parse_iso(last.get("until") or last.get("t"))
         incoming = parse_iso(now_iso)
-        same_window = window_key(last) == window_key(point)
         same_remaining = last.get("remaining") == point["remaining"]
         if last_end and incoming and incoming < last_end:
             return points
-        if same_window and same_remaining:
+        if same_remaining and same_window(last, point):
             last["until"] = now_iso
             return points
     points.append(point)
